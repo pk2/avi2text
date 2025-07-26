@@ -1,6 +1,6 @@
 # Skrypt do Transkrypcji Wideo z Rozpoznawaniem Mówców
 
-Ten zaawansowany skrypt w języku Python służy do automatycznej transkrypcji plików wideo (np. `.avi`, `.mp4`). Jego główne funkcje to:
+Ten skrypt w języku Python służy do automatycznej transkrypcji plików wideo (np. `.avi`, `.mp4`). Jego główne funkcje to:
 
 -   **Ekstrakcja audio**: Automatycznie wyodrębnia ścieżkę dźwiękową z pliku wideo.
 -   **Transkrypcja mowy na tekst**: Wykorzystuje model `WhisperX` do precyzyjnej zamiany mowy na tekst.
@@ -23,6 +23,8 @@ Ten zaawansowany skrypt w języku Python służy do automatycznej transkrypcji p
 1.  **Sklonuj lub pobierz repozytorium** i przejdź do folderu ze skryptem.
 
     ```bash
+    python -m venv .venv
+    . .venv/bin/activate
     pip install -r requirements.txt
     ```
 
