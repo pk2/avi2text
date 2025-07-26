@@ -1,105 +1,224 @@
 # -*- coding: utf-8 -*-
 
 import os
-import whisper
-import moviepy.editor as mp
-import argparse
 import sys
 import tempfile
+import argparse
+import moviepy.editor as mp
+import torch
+import whisperx
+from whisperx.diarize import DiarizationPipeline
+from docx import Document
+import json
+import pickle
+from dotenv import load_dotenv
 
-def transkrybuj_wideo(sciezka_pliku_wideo: str, model_whisper: str = "base"):
+def transkrybuj_i_rozpoznaj_mowcow(
+    sciezka_pliku_wideo: str,
+    sciezka_pliku_docx: str,
+    liczba_mowcow: int,
+    model_whisper: str,
+    jezyk: str
+):
     """
-    Wyodrębnia dźwięk z pliku wideo, dokonuje transkrypcji mowy na tekst w języku polskim
-    i drukuje wynik na konsoli.
-
-    Wymagania:
-    - ffmpeg: Upewnij się, że jest zainstalowany w Twoim systemie i dostępny w PATH.
-    - Biblioteki Python: openai-whisper, moviepy
-
-    Args:
-        sciezka_pliku_wideo (str): Pełna ścieżka do pliku wideo (np. .avi, .mp4).
-        model_whisper (str): Nazwa modelu Whisper do użycia (np. "tiny", "base", "small", "medium", "large").
-                             Większe modele są dokładniejsze, ale wolniejsze i wymagają więcej zasobów.
+    Wyodrębnia dźwięk z pliku wideo, dokonuje transkrypcji, dzieli tekst na mówców
+    i zapisuje wynik do pliku .docx. Zapisuje postęp, aby móc wznowić pracę.
     """
     print(f"--- Rozpoczynanie transkrypcji pliku: {sciezka_pliku_wideo} ---")
 
-    # --- Krok 1: Sprawdzenie, czy plik wideo istnieje ---
-    if not os.path.exists(sciezka_pliku_wideo):
-        print(f"BŁĄD: Plik '{sciezka_pliku_wideo}' nie został znaleziony.")
-        sys.exit(1)
+    # --- Krok 1: Konfiguracja folderu roboczego do zapisywania postępu ---
+    nazwa_pliku_bazowa = os.path.splitext(os.path.basename(sciezka_pliku_wideo))[0]
+    folder_roboczy = f"{nazwa_pliku_bazowa}_work"
+    os.makedirs(folder_roboczy, exist_ok=True)
+    print(f"Używam folderu roboczego: {folder_roboczy}")
 
-    # --- Krok 2: Wyodrębnienie ścieżki audio z pliku wideo ---
-    print("Krok 1/3: Wyodrębnianie ścieżki audio z pliku wideo...")
-    try:
-        wideo = mp.VideoFileClip(sciezka_pliku_wideo)
-        if wideo.audio is None:
-            print(f"BŁĄD: Plik wideo '{sciezka_pliku_wideo}' nie zawiera ścieżki audio.")
+    # Definicja ścieżek do plików pośrednich
+    sciezka_pliku_audio = os.path.join(folder_roboczy, "audio.wav")
+    sciezka_transkrypcji = os.path.join(folder_roboczy, "transkrypcja.json")
+    sciezka_aligned = os.path.join(folder_roboczy, "aligned.json")
+    sciezka_diarization = os.path.join(folder_roboczy, "diarization.pkl")
+    sciezka_wyniku_finalnego = os.path.join(folder_roboczy, "wynik_finalny.json")
+
+    # --- Krok 2: Wyodrębnienie ścieżki audio (z wznawianiem) ---
+    if not os.path.exists(sciezka_pliku_audio):
+        print("Krok 1/6: Wyodrębnianie ścieżki audio...")
+        if not os.path.exists(sciezka_pliku_wideo):
+            print(f"BŁĄD: Plik '{sciezka_pliku_wideo}' nie został znaleziony.")
             sys.exit(1)
-            
-        # Używamy pliku tymczasowego do przechowywania wyodrębnionego audio
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp_audio_file:
-            sciezka_pliku_audio = tmp_audio_file.name
-            wideo.audio.write_audiofile(sciezka_pliku_audio, logger=None)
-        
-        print(f"Audio zostało pomyślnie zapisane w pliku tymczasowym: {sciezka_pliku_audio}")
-        
-    except Exception as e:
-        print(f"BŁĄD: Wystąpił problem podczas przetwarzania wideo z użyciem moviepy: {e}")
-        print("Upewnij się, że masz zainstalowany program 'ffmpeg' w swoim systemie.")
-        sys.exit(1)
+        try:
+            wideo = mp.VideoFileClip(sciezka_pliku_wideo)
+            if wideo.audio is None:
+                print(f"BŁĄD: Plik wideo '{sciezka_pliku_wideo}' nie zawiera ścieżki audio.")
+                sys.exit(1)
+            wideo.audio.write_audiofile(sciezka_pliku_audio, codec='pcm_s16le', logger=None)
+            print(f"Audio zostało pomyślnie zapisane w: {sciezka_pliku_audio}")
+        except Exception as e:
+            print(f"BŁĄD podczas przetwarzania wideo: {e}")
+            sys.exit(1)
+    else:
+        print("Krok 1/6: Pomijanie ekstrakcji audio (plik już istnieje).")
 
-    # --- Krok 3: Transkrypcja audio przy użyciu Whisper ---
+    # --- Krok 3: Konfiguracja urządzenia (GPU lub CPU) ---
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Krok 2/6: Używane urządzenie: {device}")
+    if device == "cpu":
+        print("OSTRZEŻENIE: Brak GPU. Przetwarzanie na CPU będzie znacznie wolniejsze.")
+    
+    # --- Krok 4: Transkrypcja (z wznawianiem) ---
+    if not os.path.exists(sciezka_transkrypcji):
+        print(f"Krok 3/6: Ładowanie modelu WhisperX ('{model_whisper}')...")
+        model = None
+        try:
+            model = whisperx.load_model(model_whisper, device, compute_type="float16" if device == "cuda" else "int8")
+            audio = whisperx.load_audio(sciezka_pliku_audio)
+            print("Rozpoczynanie transkrypcji (to może potrwać)...")
+            wynik_transkrypcji = model.transcribe(audio, batch_size=16, language=jezyk)
+            with open(sciezka_transkrypcji, 'w', encoding='utf-8') as f:
+                json.dump(wynik_transkrypcji, f, ensure_ascii=False, indent=4)
+            print(f"Transkrypcja zakończona i zapisana w: {sciezka_transkrypcji}")
+        except Exception as e:
+            print(f"BŁĄD podczas transkrypcji: {e}")
+            sys.exit(1)
+        finally:
+            if model is not None: del model
+    else:
+        print("Krok 3/6: Pomijanie transkrypcji (plik już istnieje).")
+        with open(sciezka_transkrypcji, 'r', encoding='utf-8') as f:
+            wynik_transkrypcji = json.load(f)
+
+    # --- Krok 5: Podział na mówców (z wznawianiem) ---
+    if not os.path.exists(sciezka_wyniku_finalnego):
+        model_a = None
+        diarize_model = None
+        try:
+            # Wyrównywanie
+            if not os.path.exists(sciezka_aligned):
+                print("Krok 4/6: Wyrównywanie transkrypcji...")
+                model_a, metadata = whisperx.load_align_model(language_code=wynik_transkrypcji["language"], device=device)
+                wynik_aligned = whisperx.align(wynik_transkrypcji["segments"], model_a, metadata, whisperx.load_audio(sciezka_pliku_audio), device, return_char_alignments=False)
+                with open(sciezka_aligned, 'w', encoding='utf-8') as f:
+                    json.dump(wynik_aligned, f, ensure_ascii=False, indent=4)
+                print(f"Wyrównywanie zakończone i zapisane w: {sciezka_aligned}")
+                del model_a
+            else:
+                print("Krok 4/6: Pomijanie wyrównywania (plik już istnieje).")
+                with open(sciezka_aligned, 'r', encoding='utf-8') as f:
+                    wynik_aligned = json.load(f)
+
+            # Diarization
+            if not os.path.exists(sciezka_diarization):
+                print("Krok 5/6: Rozpoznawanie mówców (diarization)...")
+                hf_token = os.environ.get("HUGGING_FACE_TOKEN")
+                if hf_token is None:
+                    print("\nBŁĄD KRYTYCZNY: Brak tokena HUGGING_FACE_TOKEN w pliku .env lub zmiennych środowiskowych.")
+                    sys.exit(1)
+                diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
+                diarize_segments = diarize_model(sciezka_pliku_audio, min_speakers=liczba_mowcow, max_speakers=liczba_mowcow)
+                with open(sciezka_diarization, 'wb') as f:
+                    pickle.dump(diarize_segments, f)
+                print(f"Diarization zakończony i zapisany w: {sciezka_diarization}")
+                del diarize_model
+            else:
+                print("Krok 5/6: Pomijanie diarization (plik już istnieje).")
+                with open(sciezka_diarization, 'rb') as f:
+                    diarize_segments = pickle.load(f)
+
+            # Przypisywanie mówców
+            wynik_finalny = whisperx.assign_word_speakers(diarize_segments, wynik_aligned)
+            with open(sciezka_wyniku_finalnego, 'w', encoding='utf-8') as f:
+                json.dump(wynik_finalny, f, ensure_ascii=False, indent=4)
+            print(f"Przypisano mówców i zapisano wynik w: {sciezka_wyniku_finalnego}")
+
+        except Exception as e:
+            print(f"\nBŁĄD podczas rozpoznawania mówców: {e}")
+            sys.exit(1)
+    else:
+        print("Kroki 4/6 i 5/6: Pomijanie (finalny plik z mówcami już istnieje).")
+        with open(sciezka_wyniku_finalnego, 'r', encoding='utf-8') as f:
+            wynik_finalny = json.load(f)
+
+    # --- Krok 6: Zapis do pliku Word ---
+    print(f"Krok 6/6: Zapisywanie wyniku do pliku {sciezka_pliku_docx}...")
     try:
-        print(f"Krok 2/3: Ładowanie modelu Whisper ('{model_whisper}')...")
-        # Przy pierwszym uruchomieniu model zostanie pobrany. Może to chwilę potrwać.
-        model = whisper.load_model(model_whisper)
-        print("Model załadowany. Rozpoczynanie transkrypcji (to może potrwać)...")
-
-        # Dokonaj transkrypcji, jawnie wskazując język polski
-        wynik = model.transcribe(sciezka_pliku_audio, language="polish", fp16=False)
+        doc = Document()
+        doc.add_heading(f'Transkrypcja pliku: {os.path.basename(sciezka_pliku_wideo)}', 0)
         
-        transkrypcja = wynik["text"]
+        aktualny_mowca = None
+        aktualna_kwestia = []
 
-        print("\n--- Krok 3/3: Zakończono transkrypcję! ---")
-        print("\n--- OTRZYMANY TEKST: ---\n")
-        print(transkrypcja)
+        for segment in wynik_finalny["segments"]:
+            if "speaker" not in segment:
+                segment['speaker'] = "MÓWCA_NIEZNANY"
+            
+            segment_speaker = segment["speaker"].replace("SPEAKER_", "Mówca ")
+
+            if aktualny_mowca != segment_speaker and aktualny_mowca is not None:
+                p = doc.add_paragraph()
+                p.add_run(f"{aktualny_mowca}:").bold = True
+                p.add_run(f" {''.join(aktualna_kwestia).strip()}")
+                aktualna_kwestia = []
+            
+            aktualny_mowca = segment_speaker
+            aktualna_kwestia.append(segment.get('text', ' (słowo niezrozumiałe) ').strip() + " ")
+
+        if aktualny_mowca is not None and aktualna_kwestia:
+            p = doc.add_paragraph()
+            p.add_run(f"{aktualny_mowca}:").bold = True
+            p.add_run(f" {''.join(aktualna_kwestia).strip()}")
+
+        doc.save(sciezka_pliku_docx)
+        print("\n--- Zakończono pomyślnie! ---")
+        print(f"Wynik został zapisany w pliku: {sciezka_pliku_docx}")
 
     except Exception as e:
-        print(f"BŁĄD: Wystąpił problem podczas transkrypcji z użyciem Whisper: {e}")
-    finally:
-        # --- Krok 4: Sprzątanie - usunięcie tymczasowego pliku audio ---
-        if 'sciezka_pliku_audio' in locals() and os.path.exists(sciezka_pliku_audio):
-            os.remove(sciezka_pliku_audio)
-            print(f"\nPlik tymczasowy '{sciezka_pliku_audio}' został usunięty.")
-
+        print(f"BŁĄD podczas zapisu do pliku .docx: {e}")
 
 if __name__ == "__main__":
-    # Konfiguracja parsera argumentów linii poleceń
+    # Wczytaj zmienne z pliku .env
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
-        description="Transkrypcja mowy z pliku wideo (np. AVI) na tekst w języku polskim.",
+        description="Zaawansowana transkrypcja wideo z podziałem na mówców i zapisem do Word.",
         formatter_class=argparse.RawTextHelpFormatter
     )
+    parser.add_argument("sciezka_wideo", type=str, help="Ścieżka do pliku wideo.")
     parser.add_argument(
-        "sciezka_wideo",
+        "--liczba_mowcow", 
+        type=int, 
+        default=os.getenv("DEFAULT_SPEAKERS", None),
+        help="Liczba mówców. Nadpisuje wartość z pliku .env."
+    )
+    parser.add_argument(
+        "--plik_wyjsciowy",
         type=str,
-        help="Ścieżka do pliku wideo, który chcesz przetworzyć."
+        default="transkrypcja.docx",
+        help="Nazwa pliku .docx do zapisu wyniku (domyślnie: transkrypcja.docx)."
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="base",
-        choices=["tiny", "base", "small", "medium", "large"],
-        help="Wybierz model Whisper do użycia.\n"
-             "Dostępne opcje (od najszybszego do najdokładniejszego):\n"
-             "- tiny: Najszybszy, najniższa dokładność.\n"
-             "- base: Dobry kompromis między szybkością a dokładnością (domyślny).\n"
-             "- small: Wolniejszy, ale bardziej dokładny.\n"
-             "- medium: Znacznie dokładniejszy, ale wolniejszy i wymaga więcej VRAM/RAM.\n"
-             "- large: Najlepsza dokładność, najbardziej zasobożerny."
+        default=os.getenv("DEFAULT_MODEL", "large-v2"),
+        choices=["tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3"],
+        help="Model Whisper do użycia. Nadpisuje wartość z pliku .env."
     )
-
+    parser.add_argument(
+        "--jezyk",
+        type=str,
+        default=os.getenv("DEFAULT_LANGUAGE", "pl"),
+        help="Kod języka (np. 'pl', 'en'). Nadpisuje wartość z pliku .env."
+    )
     args = parser.parse_args()
 
-    # Wywołanie głównej funkcji
-    transkrybuj_wideo(args.sciezka_wideo, args.model)
+    # Sprawdzenie, czy liczba mówców została podana
+    if args.liczba_mowcow is None:
+        print("BŁĄD: Liczba mówców jest wymagana. Ustaw ją w pliku .env jako DEFAULT_SPEAKERS lub podaj za pomocą flagi --liczba_mowcow.")
+        sys.exit(1)
+
+    transkrybuj_i_rozpoznaj_mowcow(
+        args.sciezka_wideo,
+        args.plik_wyjsciowy,
+        args.liczba_mowcow,
+        args.model,
+        args.jezyk
+    )
 
