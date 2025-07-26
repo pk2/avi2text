@@ -12,6 +12,24 @@ from docx import Document
 import json
 import pickle
 from dotenv import load_dotenv
+import logging
+from contextlib import contextmanager
+
+# Kontekst menedżer do wyciszania niechcianych komunikatów z bibliotek
+@contextmanager
+def supress_stdout_stderr():
+    """Tymczasowo blokuje komunikaty print i warning, przekierowując je do os.devnull."""
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    try:
+        sys.stdout = open(os.devnull, 'w')
+        sys.stderr = open(os.devnull, 'w')
+        yield
+    finally:
+        sys.stdout.close()
+        sys.stderr.close()
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
 
 def transkrybuj_i_rozpoznaj_mowcow(
     sciezka_pliku_wideo: str,
@@ -24,6 +42,12 @@ def transkrybuj_i_rozpoznaj_mowcow(
     Wyodrębnia dźwięk z pliku wideo, dokonuje transkrypcji, dzieli tekst na mówców
     i zapisuje wynik do pliku .docx. Zapisuje postęp, aby móc wznowić pracę.
     """
+    # --- Konfiguracja logowania w celu wyłączenia niepotrzebnych ostrzeżeń ---
+    logging.getLogger('pytorch_lightning').setLevel(logging.ERROR)
+    logging.getLogger('pyannote').setLevel(logging.ERROR)
+    logging.getLogger('torch').setLevel(logging.ERROR)
+
+
     print(f"--- Rozpoczynanie transkrypcji pliku: {sciezka_pliku_wideo} ---")
 
     # --- Krok 1: Konfiguracja folderu roboczego do zapisywania postępu ---
@@ -69,7 +93,8 @@ def transkrybuj_i_rozpoznaj_mowcow(
         print(f"Krok 3/6: Ładowanie modelu WhisperX ('{model_whisper}')...")
         model = None
         try:
-            model = whisperx.load_model(model_whisper, device, compute_type="float16" if device == "cuda" else "int8")
+            with supress_stdout_stderr():
+                model = whisperx.load_model(model_whisper, device, compute_type="float16" if device == "cuda" else "int8")
             audio = whisperx.load_audio(sciezka_pliku_audio)
             print("Rozpoczynanie transkrypcji (to może potrwać)...")
             wynik_transkrypcji = model.transcribe(audio, batch_size=16, language=jezyk)
@@ -94,7 +119,8 @@ def transkrybuj_i_rozpoznaj_mowcow(
             # Wyrównywanie
             if not os.path.exists(sciezka_aligned):
                 print("Krok 4/6: Wyrównywanie transkrypcji...")
-                model_a, metadata = whisperx.load_align_model(language_code=wynik_transkrypcji["language"], device=device)
+                with supress_stdout_stderr():
+                    model_a, metadata = whisperx.load_align_model(language_code=wynik_transkrypcji["language"], device=device)
                 wynik_aligned = whisperx.align(wynik_transkrypcji["segments"], model_a, metadata, whisperx.load_audio(sciezka_pliku_audio), device, return_char_alignments=False)
                 with open(sciezka_aligned, 'w', encoding='utf-8') as f:
                     json.dump(wynik_aligned, f, ensure_ascii=False, indent=4)
@@ -112,7 +138,8 @@ def transkrybuj_i_rozpoznaj_mowcow(
                 if hf_token is None:
                     print("\nBŁĄD KRYTYCZNY: Brak tokena HUGGING_FACE_TOKEN w pliku .env lub zmiennych środowiskowych.")
                     sys.exit(1)
-                diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
+                with supress_stdout_stderr():
+                    diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
                 diarize_segments = diarize_model(sciezka_pliku_audio, min_speakers=liczba_mowcow, max_speakers=liczba_mowcow)
                 with open(sciezka_diarization, 'wb') as f:
                     pickle.dump(diarize_segments, f)
@@ -191,8 +218,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--plik_wyjsciowy",
         type=str,
-        default="transkrypcja.docx",
-        help="Nazwa pliku .docx do zapisu wyniku (domyślnie: transkrypcja.docx)."
+        default=None,
+        help="Nazwa pliku .docx. Domyślnie [nazwa_wideo].docx"
     )
     parser.add_argument(
         "--model",
@@ -213,11 +240,17 @@ if __name__ == "__main__":
     if args.liczba_mowcow is None:
         print("BŁĄD: Liczba mówców jest wymagana. Ustaw ją w pliku .env jako DEFAULT_SPEAKERS lub podaj za pomocą flagi --liczba_mowcow.")
         sys.exit(1)
+        
+    # Ustaw domyślną nazwę pliku wyjściowego, jeśli nie została podana
+    plik_wyjsciowy = args.plik_wyjsciowy
+    if plik_wyjsciowy is None:
+        nazwa_bazowa = os.path.splitext(os.path.basename(args.sciezka_wideo))[0]
+        plik_wyjsciowy = f"{nazwa_bazowa}.docx"
 
     transkrybuj_i_rozpoznaj_mowcow(
         args.sciezka_wideo,
-        args.plik_wyjsciowy,
-        args.liczba_mowcow,
+        plik_wyjsciowy,
+        int(args.liczba_mowcow),
         args.model,
         args.jezyk
     )
