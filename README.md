@@ -23,6 +23,8 @@ Ten skrypt w języku Python służy do automatycznej transkrypcji plików wideo 
 1.  **Sklonuj lub pobierz repozytorium** i przejdź do folderu ze skryptem.
 
     ```bash
+    git clone https://github.com/pk2/avi2text.git
+    cd avi2text
     python -m venv .venv
     . .venv/bin/activate
     pip install -r requirements.txt
