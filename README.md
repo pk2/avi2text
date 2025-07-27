@@ -1,6 +1,6 @@
 # Skrypt do Transkrypcji Wideo z Rozpoznawaniem Mówców
 
-Ten skrypt w języku Python służy do automatycznej transkrypcji plików wideo (np. `.avi`, `.mp4`). Jego główne funkcje to:
+Ten zaawansowany skrypt w języku Python służy do automatycznej transkrypcji plików wideo (np. `.avi`, `.mp4`). Jego główne funkcje to:
 
 -   **Ekstrakcja audio**: Automatycznie wyodrębnia ścieżkę dźwiękową z pliku wideo.
 -   **Transkrypcja mowy na tekst**: Wykorzystuje model `WhisperX` do precyzyjnej zamiany mowy na tekst.
@@ -8,20 +8,21 @@ Ten skrypt w języku Python służy do automatycznej transkrypcji plików wideo 
 -   **Zapis postępu**: Tworzy folder roboczy (`nazwa_pliku_work`), w którym zapisuje wyniki pośrednie. W razie błędu lub przerwania pracy, skrypt można uruchomić ponownie, a on wznowi działanie od ostatniego udanego etapu.
 -   **Zapis do `.docx`**: Generuje czytelny plik Word z finalną transkrypcją, z pogrubionymi etykietami mówców.
 -   **Konfiguracja przez `.env`**: Umożliwia łatwe zarządzanie ustawieniami za pomocą pliku `.env`.
+-   **Zaawansowane optymalizacje**: Obsługuje VAD (Wykrywanie Aktywności Głosowej) oraz silnik CTranslate2 dla maksymalnej wydajności na CPU.
 
 ## Wymagania
 
 1.  **Python**: Wersja 3.8 lub nowsza.
 2.  **FFMPEG**: Niezbędny do przetwarzania plików wideo. Musi być zainstalowany w systemie i dostępny w zmiennej `PATH`.
-    -   **Windows**: Pobierz z [oficjalnej strony](https://ffmpeg.org/download.html).
-    -   **macOS (Homebrew)**: `brew install ffmpeg`
-    -   **Linux (Debian/Ubuntu)**: `sudo apt update && sudo apt install ffmpeg`
-3.  **Karta graficzna NVIDIA (Opcjonalnie, ale zalecane)**: Znacząco przyspiesza proces. W przypadku jej braku, skrypt użyje procesora (CPU), co będzie znacznie wolniejsze.
+3.  **Karta graficzna NVIDIA (Opcjonalnie, ale zalecane)**: Znacząco przyspiesza proces.
 
 ## Instalacja
 
 1.  **Sklonuj lub pobierz repozytorium** i przejdź do folderu ze skryptem.
 
+2.  **Zainstaluj PyTorch**: Wejdź na [oficjalną stronę PyTorch](https://pytorch.org/get-started/locally/) i wybierz konfigurację odpowiednią dla Twojego systemu (np. `Stable`, `Pip`, `Python`, `CUDA` lub `CPU`). Skopiuj i uruchom wygenerowane polecenie.
+
+3.  **Zainstaluj pozostałe zależności** za pomocą pliku `requirements.txt`:
     ```bash
     git clone https://github.com/pk2/avi2text.git
     cd avi2text
@@ -36,7 +37,7 @@ Przed pierwszym uruchomieniem należy skonfigurować plik `.env`.
 
 1.  **Utwórz plik `.env`** w tym samym folderze, w którym znajduje się skrypt.
 
-2.  **Skopiuj i wklej** poniższą zawartość do pliku `.env`:
+2.  **Skopiuj i wklej** poniższą zawartość do pliku `.env` i **uzupełnij swój token**:
     ```
     # Plik konfiguracyjny dla skryptu transkrypcji
     HUGGING_FACE_TOKEN="hf_TWOJ_SKOPIOWANY_TOKEN"
@@ -47,39 +48,32 @@ Przed pierwszym uruchomieniem należy skonfigurować plik `.env`.
 
 3.  **Uzupełnij `HUGGING_FACE_TOKEN`**:
     -   Zaloguj się lub zarejestruj na [Hugging Face](https://huggingface.co/).
-    -   Przejdź na strony modeli [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) oraz [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) i zaakceptuj regulaminy.
-    -   Przejdź do **Settings -> Access Tokens** w ustawieniach swojego konta i skopiuj token.
-    -   Wklej skopiowany token do pliku `.env`. Token jest wymagany do jednorazowego pobrania modeli `pyannote` na dysk. Całe dalsze przetwarzanie odbywa się w 100% lokalnie.
-
-4.  **Dostosuj pozostałe zmienne** (opcjonalnie):
-    -   `DEFAULT_MODEL`: Zmień model Whisper, jeśli potrzebujesz (np. na `medium` dla szybszego działania kosztem mniejszej dokładności).
-    -   `DEFAULT_SPEAKERS`: Ustaw domyślną liczbę mówców.
-    -   `DEFAULT_LANGUAGE`: Ustaw domyślny język transkrypcji (np. `en` dla angielskiego).
+    -   Zaakceptuj regulaminy na stronach modeli [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) oraz [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0).
+    -   Skopiuj swój token z **Settings -> Access Tokens** i wklej go do pliku `.env`.
 
 ## Użycie
 
-Skrypt uruchamia się z terminala lub wiersza poleceń.
-
-**Podstawowe użycie**
-
-Podaj jako argument ścieżkę do pliku wideo. Skrypt użyje ustawień z pliku `.env`.
+### Podstawowe użycie
+Skrypt użyje ustawień z pliku `.env` oraz automatycznie wykryje najlepsze opcje dla Twojego sprzętu.
 ```bash
 python3 avi2text.py "sciezka/do/mojego_wideo.mp4"
 
-Plik wynikowy mojego_wideo.docx zostanie utworzony w tym samym folderze.
+Zaawansowane opcje i optymalizacja
+Możesz dostosować działanie skryptu za pomocą flag:
 
-Użycie z flagami (nadpisywanie .env)
+--liczba_mowcow LICZBA: Określa dokładną liczbę mówców.
 
-Możesz nadpisać domyślne ustawienia za pomocą flag:
+--model MODEL: Wybiera inny model Whisper (np. medium, small).
 
---liczba_mowcow: Określa dokładną liczbę mówców w nagraniu.
+--batch_size ROZMIAR: (Tylko GPU) Ustawia liczbę segmentów przetwarzanych naraz. Zwiększ (np. do 16, 32), jeśli masz GPU z dużą ilością VRAM.
 
---model: Wybiera inny model Whisper na czas tego uruchomienia.
+--cpu_threads LICZBA: (Tylko CPU) Ustawia liczbę wątków procesora. Domyślnie używa wszystkich dostępnych.
 
---plik_wyjsciowy: Ustala niestandardową nazwę dla pliku .docx.
+--no-vad: Wyłącza filtr VAD (domyślnie włączony).
 
---jezyk: Zmienia język transkrypcji.
+--compute_type TYP: Zmienia typ obliczeń. Aby użyć CTranslate2 na CPU i uzyskać 4x przyspieszenie, użyj --compute_type int8.
 
-Przykład:
+Przykład maksymalnej optymalizacji na CPU:
 
-python3 avi2text.py "spotkanie_firmowe.avi" --liczba_mowcow 4 --model medium --plik_wyjsciowy "transkrypcja_spotkania.docx"
+python3 avi2text.py "dlugie_nagranie.avi" --model medium --compute_type int8
+

@@ -13,30 +13,15 @@ import json
 import pickle
 from dotenv import load_dotenv
 import logging
-from contextlib import contextmanager
-
-# Kontekst menedżer do wyciszania niechcianych komunikatów z bibliotek
-@contextmanager
-def supress_stdout_stderr():
-    """Tymczasowo blokuje komunikaty print i warning, przekierowując je do os.devnull."""
-    original_stdout = sys.stdout
-    original_stderr = sys.stderr
-    try:
-        sys.stdout = open(os.devnull, 'w')
-        sys.stderr = open(os.devnull, 'w')
-        yield
-    finally:
-        sys.stdout.close()
-        sys.stderr.close()
-        sys.stdout = original_stdout
-        sys.stderr = original_stderr
 
 def transkrybuj_i_rozpoznaj_mowcow(
     sciezka_pliku_wideo: str,
     sciezka_pliku_docx: str,
     liczba_mowcow: int,
     model_whisper: str,
-    jezyk: str
+    jezyk: str,
+    batch_size: int,
+    compute_type: str
 ):
     """
     Wyodrębnia dźwięk z pliku wideo, dokonuje transkrypcji, dzieli tekst na mówców
@@ -56,14 +41,14 @@ def transkrybuj_i_rozpoznaj_mowcow(
     os.makedirs(folder_roboczy, exist_ok=True)
     print(f"Używam folderu roboczego: {folder_roboczy}")
 
-    # Definicja ścieżek do plików pośrednich
-    sciezka_pliku_audio = os.path.join(folder_roboczy, "audio.wav")
+    # Definicja ścieżek do plików pośrednich - używamy FLAC dla oszczędności miejsca
+    sciezka_pliku_audio = os.path.join(folder_roboczy, "audio.flac")
     sciezka_transkrypcji = os.path.join(folder_roboczy, "transkrypcja.json")
     sciezka_aligned = os.path.join(folder_roboczy, "aligned.json")
     sciezka_diarization = os.path.join(folder_roboczy, "diarization.pkl")
     sciezka_wyniku_finalnego = os.path.join(folder_roboczy, "wynik_finalny.json")
 
-    # --- Krok 2: Wyodrębnienie ścieżki audio (z wznawianiem) ---
+    # --- Krok 2: Wyodrębnienie ścieżki audio do formatu FLAC (z wznawianiem) ---
     if not os.path.exists(sciezka_pliku_audio):
         print("Krok 1/6: Wyodrębnianie ścieżki audio...")
         if not os.path.exists(sciezka_pliku_wideo):
@@ -74,8 +59,9 @@ def transkrybuj_i_rozpoznaj_mowcow(
             if wideo.audio is None:
                 print(f"BŁĄD: Plik wideo '{sciezka_pliku_wideo}' nie zawiera ścieżki audio.")
                 sys.exit(1)
-            wideo.audio.write_audiofile(sciezka_pliku_audio, codec='pcm_s16le', logger=None)
-            print(f"Audio zostało pomyślnie zapisane w: {sciezka_pliku_audio}")
+            # Zapis do formatu FLAC - bezstratna kompresja
+            wideo.audio.write_audiofile(sciezka_pliku_audio, codec='flac', logger=None)
+            print(f"Audio zostało pomyślnie zapisane w formacie FLAC: {sciezka_pliku_audio}")
         except Exception as e:
             print(f"BŁĄD podczas przetwarzania wideo: {e}")
             sys.exit(1)
@@ -86,18 +72,19 @@ def transkrybuj_i_rozpoznaj_mowcow(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Krok 2/6: Używane urządzenie: {device}")
     if device == "cpu":
-        print("OSTRZEŻENIE: Brak GPU. Przetwarzanie na CPU będzie znacznie wolniejsze.")
+        print("OSTRZEŻENIE: Brak GPU. Przetwarzanie na CPU będzie znacznie wolniejsze. Rozważ użycie CTranslate2 (`--compute_type int8`).")
     
     # --- Krok 4: Transkrypcja (z wznawianiem) ---
     if not os.path.exists(sciezka_transkrypcji):
         print(f"Krok 3/6: Ładowanie modelu WhisperX ('{model_whisper}')...")
         model = None
         try:
-            with supress_stdout_stderr():
-                model = whisperx.load_model(model_whisper, device, compute_type="float16" if device == "cuda" else "int8")
+            model = whisperx.load_model(model_whisper, device, compute_type=compute_type)
             audio = whisperx.load_audio(sciezka_pliku_audio)
-            print("Rozpoczynanie transkrypcji (to może potrwać)...")
-            wynik_transkrypcji = model.transcribe(audio, batch_size=16, language=jezyk)
+            
+            print("Krok 4/6: Rozpoczynanie transkrypcji (to może potrwać)...")
+            wynik_transkrypcji = model.transcribe(audio, batch_size=batch_size, language=jezyk, print_progress=True)
+            
             with open(sciezka_transkrypcji, 'w', encoding='utf-8') as f:
                 json.dump(wynik_transkrypcji, f, ensure_ascii=False, indent=4)
             print(f"Transkrypcja zakończona i zapisana w: {sciezka_transkrypcji}")
@@ -107,7 +94,7 @@ def transkrybuj_i_rozpoznaj_mowcow(
         finally:
             if model is not None: del model
     else:
-        print("Krok 3/6: Pomijanie transkrypcji (plik już istnieje).")
+        print("Kroki 3/6 i 4/6: Pomijanie transkrypcji (pliki już istnieją).")
         with open(sciezka_transkrypcji, 'r', encoding='utf-8') as f:
             wynik_transkrypcji = json.load(f)
 
@@ -118,35 +105,33 @@ def transkrybuj_i_rozpoznaj_mowcow(
         try:
             # Wyrównywanie
             if not os.path.exists(sciezka_aligned):
-                print("Krok 4/6: Wyrównywanie transkrypcji...")
-                with supress_stdout_stderr():
-                    model_a, metadata = whisperx.load_align_model(language_code=wynik_transkrypcji["language"], device=device)
+                print("Krok 5/6: Wyrównywanie transkrypcji...")
+                model_a, metadata = whisperx.load_align_model(language_code=wynik_transkrypcji["language"], device=device)
                 wynik_aligned = whisperx.align(wynik_transkrypcji["segments"], model_a, metadata, whisperx.load_audio(sciezka_pliku_audio), device, return_char_alignments=False)
                 with open(sciezka_aligned, 'w', encoding='utf-8') as f:
                     json.dump(wynik_aligned, f, ensure_ascii=False, indent=4)
                 print(f"Wyrównywanie zakończone i zapisane w: {sciezka_aligned}")
                 del model_a
             else:
-                print("Krok 4/6: Pomijanie wyrównywania (plik już istnieje).")
+                print("Krok 5/6: Pomijanie wyrównywania (plik już istnieje).")
                 with open(sciezka_aligned, 'r', encoding='utf-8') as f:
                     wynik_aligned = json.load(f)
 
             # Diarization
             if not os.path.exists(sciezka_diarization):
-                print("Krok 5/6: Rozpoznawanie mówców (diarization)...")
+                print("Krok 6/6: Rozpoznawanie mówców (diarization)...")
                 hf_token = os.environ.get("HUGGING_FACE_TOKEN")
                 if hf_token is None:
                     print("\nBŁĄD KRYTYCZNY: Brak tokena HUGGING_FACE_TOKEN w pliku .env lub zmiennych środowiskowych.")
                     sys.exit(1)
-                with supress_stdout_stderr():
-                    diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
+                diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
                 diarize_segments = diarize_model(sciezka_pliku_audio, min_speakers=liczba_mowcow, max_speakers=liczba_mowcow)
                 with open(sciezka_diarization, 'wb') as f:
                     pickle.dump(diarize_segments, f)
                 print(f"Diarization zakończony i zapisany w: {sciezka_diarization}")
                 del diarize_model
             else:
-                print("Krok 5/6: Pomijanie diarization (plik już istnieje).")
+                print("Krok 6/6: Pomijanie diarization (plik już istnieje).")
                 with open(sciezka_diarization, 'rb') as f:
                     diarize_segments = pickle.load(f)
 
@@ -160,12 +145,12 @@ def transkrybuj_i_rozpoznaj_mowcow(
             print(f"\nBŁĄD podczas rozpoznawania mówców: {e}")
             sys.exit(1)
     else:
-        print("Kroki 4/6 i 5/6: Pomijanie (finalny plik z mówcami już istnieje).")
+        print("Kroki 5/6 i 6/6: Pomijanie (finalny plik z mówcami już istnieje).")
         with open(sciezka_wyniku_finalnego, 'r', encoding='utf-8') as f:
             wynik_finalny = json.load(f)
 
-    # --- Krok 6: Zapis do pliku Word ---
-    print(f"Krok 6/6: Zapisywanie wyniku do pliku {sciezka_pliku_docx}...")
+    # --- Krok 7: Zapis do pliku Word ---
+    print(f"Krok 7/7: Zapisywanie wyniku do pliku {sciezka_pliku_docx}...")
     try:
         doc = Document()
         doc.add_heading(f'Transkrypcja pliku: {os.path.basename(sciezka_pliku_wideo)}', 0)
@@ -204,6 +189,9 @@ if __name__ == "__main__":
     # Wczytaj zmienne z pliku .env
     load_dotenv()
 
+    # Domyślny typ obliczeń w zależności od dostępności GPU
+    default_compute_type = "float16" if torch.cuda.is_available() else "int8"
+
     parser = argparse.ArgumentParser(
         description="Zaawansowana transkrypcja wideo z podziałem na mówców i zapisem do Word.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -234,6 +222,25 @@ if __name__ == "__main__":
         default=os.getenv("DEFAULT_LANGUAGE", "pl"),
         help="Kod języka (np. 'pl', 'en'). Nadpisuje wartość z pliku .env."
     )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=16,
+        help="Liczba segmentów przetwarzanych równolegle. Zwiększ dla lepszej wydajności na GPU."
+    )
+    parser.add_argument(
+        "--cpu_threads",
+        type=int,
+        default=os.cpu_count(),
+        help="Liczba wątków CPU do użycia podczas transkrypcji (tylko dla trybu CPU)."
+    )
+    parser.add_argument(
+        "--compute_type",
+        type=str,
+        default=default_compute_type,
+        choices=["float16", "float32", "int8", "int8_float16"],
+        help=f"Typ obliczeń. Domyślnie: '{default_compute_type}'. Użyj 'int8' dla CTranslate2 na CPU."
+    )
     args = parser.parse_args()
 
     # Sprawdzenie, czy liczba mówców została podana
@@ -246,12 +253,19 @@ if __name__ == "__main__":
     if plik_wyjsciowy is None:
         nazwa_bazowa = os.path.splitext(os.path.basename(args.sciezka_wideo))[0]
         plik_wyjsciowy = f"{nazwa_bazowa}.docx"
+        
+    # Ustawienie liczby wątków dla PyTorch, jeśli pracujemy na CPU
+    if not torch.cuda.is_available():
+        print(f"Ustawiam liczbę wątków CPU na: {args.cpu_threads}")
+        torch.set_num_threads(args.cpu_threads)
 
     transkrybuj_i_rozpoznaj_mowcow(
         args.sciezka_wideo,
         plik_wyjsciowy,
         int(args.liczba_mowcow),
         args.model,
-        args.jezyk
+        args.jezyk,
+        args.batch_size,
+        args.compute_type
     )
 
