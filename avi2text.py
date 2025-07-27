@@ -21,7 +21,8 @@ def transkrybuj_i_rozpoznaj_mowcow(
     model_whisper: str,
     jezyk: str,
     batch_size: int,
-    compute_type: str
+    compute_type: str,
+    asr_options: dict
 ):
     """
     Wyodrębnia dźwięk z pliku wideo, dokonuje transkrypcji, dzieli tekst na mówców
@@ -41,7 +42,7 @@ def transkrybuj_i_rozpoznaj_mowcow(
     os.makedirs(folder_roboczy, exist_ok=True)
     print(f"Używam folderu roboczego: {folder_roboczy}")
 
-    # Definicja ścieżek do plików pośrednich - używamy FLAC dla oszczędności miejsca
+    # Definicja ścieżek do plików pośrednich
     sciezka_pliku_audio = os.path.join(folder_roboczy, "audio.flac")
     sciezka_transkrypcji = os.path.join(folder_roboczy, "transkrypcja.json")
     sciezka_aligned = os.path.join(folder_roboczy, "aligned.json")
@@ -50,7 +51,7 @@ def transkrybuj_i_rozpoznaj_mowcow(
 
     # --- Krok 2: Wyodrębnienie ścieżki audio do formatu FLAC (z wznawianiem) ---
     if not os.path.exists(sciezka_pliku_audio):
-        print("Krok 1/6: Wyodrębnianie ścieżki audio...")
+        print("Krok 1/7: Wyodrębnianie ścieżki audio...")
         if not os.path.exists(sciezka_pliku_wideo):
             print(f"BŁĄD: Plik '{sciezka_pliku_wideo}' nie został znaleziony.")
             sys.exit(1)
@@ -59,30 +60,29 @@ def transkrybuj_i_rozpoznaj_mowcow(
             if wideo.audio is None:
                 print(f"BŁĄD: Plik wideo '{sciezka_pliku_wideo}' nie zawiera ścieżki audio.")
                 sys.exit(1)
-            # Zapis do formatu FLAC - bezstratna kompresja
             wideo.audio.write_audiofile(sciezka_pliku_audio, codec='flac', logger=None)
             print(f"Audio zostało pomyślnie zapisane w formacie FLAC: {sciezka_pliku_audio}")
         except Exception as e:
             print(f"BŁĄD podczas przetwarzania wideo: {e}")
             sys.exit(1)
     else:
-        print("Krok 1/6: Pomijanie ekstrakcji audio (plik już istnieje).")
+        print("Krok 1/7: Pomijanie ekstrakcji audio (plik już istnieje).")
 
     # --- Krok 3: Konfiguracja urządzenia (GPU lub CPU) ---
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Krok 2/6: Używane urządzenie: {device}")
+    print(f"Krok 2/7: Używane urządzenie: {device}")
     if device == "cpu":
         print("OSTRZEŻENIE: Brak GPU. Przetwarzanie na CPU będzie znacznie wolniejsze. Rozważ użycie CTranslate2 (`--compute_type int8`).")
     
     # --- Krok 4: Transkrypcja (z wznawianiem) ---
     if not os.path.exists(sciezka_transkrypcji):
-        print(f"Krok 3/6: Ładowanie modelu WhisperX ('{model_whisper}')...")
+        print(f"Krok 3/7: Ładowanie modelu WhisperX ('{model_whisper}')...")
         model = None
         try:
-            model = whisperx.load_model(model_whisper, device, compute_type=compute_type)
+            model = whisperx.load_model(model_whisper, device, compute_type=compute_type, asr_options=asr_options)
             audio = whisperx.load_audio(sciezka_pliku_audio)
             
-            print("Krok 4/6: Rozpoczynanie transkrypcji (to może potrwać)...")
+            print("Krok 4/7: Rozpoczynanie transkrypcji (to może potrwać)...")
             wynik_transkrypcji = model.transcribe(audio, batch_size=batch_size, language=jezyk, print_progress=True)
             
             with open(sciezka_transkrypcji, 'w', encoding='utf-8') as f:
@@ -94,7 +94,7 @@ def transkrybuj_i_rozpoznaj_mowcow(
         finally:
             if model is not None: del model
     else:
-        print("Kroki 3/6 i 4/6: Pomijanie transkrypcji (pliki już istnieją).")
+        print("Kroki 3/7 i 4/7: Pomijanie transkrypcji (pliki już istnieją).")
         with open(sciezka_transkrypcji, 'r', encoding='utf-8') as f:
             wynik_transkrypcji = json.load(f)
 
@@ -105,7 +105,7 @@ def transkrybuj_i_rozpoznaj_mowcow(
         try:
             # Wyrównywanie
             if not os.path.exists(sciezka_aligned):
-                print("Krok 5/6: Wyrównywanie transkrypcji...")
+                print("Krok 5/7: Wyrównywanie transkrypcji i przywracanie interpunkcji...")
                 model_a, metadata = whisperx.load_align_model(language_code=wynik_transkrypcji["language"], device=device)
                 wynik_aligned = whisperx.align(wynik_transkrypcji["segments"], model_a, metadata, whisperx.load_audio(sciezka_pliku_audio), device, return_char_alignments=False)
                 with open(sciezka_aligned, 'w', encoding='utf-8') as f:
@@ -113,13 +113,13 @@ def transkrybuj_i_rozpoznaj_mowcow(
                 print(f"Wyrównywanie zakończone i zapisane w: {sciezka_aligned}")
                 del model_a
             else:
-                print("Krok 5/6: Pomijanie wyrównywania (plik już istnieje).")
+                print("Krok 5/7: Pomijanie wyrównywania (plik już istnieje).")
                 with open(sciezka_aligned, 'r', encoding='utf-8') as f:
                     wynik_aligned = json.load(f)
 
             # Diarization
             if not os.path.exists(sciezka_diarization):
-                print("Krok 6/6: Rozpoznawanie mówców (diarization)...")
+                print("Krok 6/7: Rozpoznawanie mówców (diarization)...")
                 hf_token = os.environ.get("HUGGING_FACE_TOKEN")
                 if hf_token is None:
                     print("\nBŁĄD KRYTYCZNY: Brak tokena HUGGING_FACE_TOKEN w pliku .env lub zmiennych środowiskowych.")
@@ -131,7 +131,7 @@ def transkrybuj_i_rozpoznaj_mowcow(
                 print(f"Diarization zakończony i zapisany w: {sciezka_diarization}")
                 del diarize_model
             else:
-                print("Krok 6/6: Pomijanie diarization (plik już istnieje).")
+                print("Krok 6/7: Pomijanie diarization (plik już istnieje).")
                 with open(sciezka_diarization, 'rb') as f:
                     diarize_segments = pickle.load(f)
 
@@ -145,7 +145,7 @@ def transkrybuj_i_rozpoznaj_mowcow(
             print(f"\nBŁĄD podczas rozpoznawania mówców: {e}")
             sys.exit(1)
     else:
-        print("Kroki 5/6 i 6/6: Pomijanie (finalny plik z mówcami już istnieje).")
+        print("Kroki 5/7 i 6/7: Pomijanie (finalny plik z mówcami już istnieje).")
         with open(sciezka_wyniku_finalnego, 'r', encoding='utf-8') as f:
             wynik_finalny = json.load(f)
 
@@ -158,6 +158,7 @@ def transkrybuj_i_rozpoznaj_mowcow(
         aktualny_mowca = None
         aktualna_kwestia = []
 
+        # ULEPSZONA LOGIKA: Składanie tekstu słowo po słowie dla lepszej interpunkcji
         for segment in wynik_finalny["segments"]:
             if "speaker" not in segment:
                 segment['speaker'] = "MÓWCA_NIEZNANY"
@@ -167,16 +168,24 @@ def transkrybuj_i_rozpoznaj_mowcow(
             if aktualny_mowca != segment_speaker and aktualny_mowca is not None:
                 p = doc.add_paragraph()
                 p.add_run(f"{aktualny_mowca}:").bold = True
-                p.add_run(f" {''.join(aktualna_kwestia).strip()}")
+                p.add_run(f" {''.join(aktualna_kwestia).lstrip()}")
                 aktualna_kwestia = []
             
             aktualny_mowca = segment_speaker
-            aktualna_kwestia.append(segment.get('text', ' (słowo niezrozumiałe) ').strip() + " ")
+            
+            # Składamy zdanie ze słów w segmencie
+            if 'words' in segment:
+                for word_info in segment['words']:
+                    # Dodajemy słowo i spację po nim
+                    aktualna_kwestia.append(word_info['word'] + " ")
+            else:
+                # Fallback, jeśli nie ma informacji o słowach
+                aktualna_kwestia.append(segment.get('text', ' (słowo niezrozumiałe) ').strip() + " ")
 
         if aktualny_mowca is not None and aktualna_kwestia:
             p = doc.add_paragraph()
             p.add_run(f"{aktualny_mowca}:").bold = True
-            p.add_run(f" {''.join(aktualna_kwestia).strip()}")
+            p.add_run(f" {''.join(aktualna_kwestia).lstrip()}")
 
         doc.save(sciezka_pliku_docx)
         print("\n--- Zakończono pomyślnie! ---")
@@ -241,6 +250,12 @@ if __name__ == "__main__":
         choices=["float16", "float32", "int8", "int8_float16"],
         help=f"Typ obliczeń. Domyślnie: '{default_compute_type}'. Użyj 'int8' dla CTranslate2 na CPU."
     )
+    parser.add_argument(
+        "--beam_size",
+        type=int,
+        default=5,
+        help="Liczba 'promieni' w algorytmie beam search. Zwiększenie poprawia dokładność kosztem prędkości."
+    )
     args = parser.parse_args()
 
     # Sprawdzenie, czy liczba mówców została podana
@@ -259,6 +274,11 @@ if __name__ == "__main__":
         print(f"Ustawiam liczbę wątków CPU na: {args.cpu_threads}")
         torch.set_num_threads(args.cpu_threads)
 
+    # Przygotowanie opcji dla modelu ASR (Automatic Speech Recognition)
+    asr_options = {
+        "beam_size": args.beam_size,
+    }
+
     transkrybuj_i_rozpoznaj_mowcow(
         args.sciezka_wideo,
         plik_wyjsciowy,
@@ -266,6 +286,7 @@ if __name__ == "__main__":
         args.model,
         args.jezyk,
         args.batch_size,
-        args.compute_type
+        args.compute_type,
+        asr_options
     )
 
