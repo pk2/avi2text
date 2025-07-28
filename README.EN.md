@@ -50,7 +50,7 @@ Before the first run, you need to configure the `.env` file.
 
     ```
     HUGGING_FACE_TOKEN="hf_TOKEN"
-    DEFAULT_MODEL="large-v2"
+    DEFAULT_MODEL="large-v3"
     DEFAULT_SPEAKERS=2
     DEFAULT_LANGUAGE="pl"
     ```

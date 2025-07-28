@@ -41,7 +41,7 @@ Przed pierwszym uruchomieniem należy skonfigurować plik `.env`.
     ```
     # Plik konfiguracyjny dla skryptu transkrypcji
     HUGGING_FACE_TOKEN="hf_TWOJ_SKOPIOWANY_TOKEN"
-    DEFAULT_MODEL="large-v2"
+    DEFAULT_MODEL="large-v3"
     DEFAULT_SPEAKERS=2
     DEFAULT_LANGUAGE="pl"
     ```
