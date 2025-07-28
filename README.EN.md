@@ -49,7 +49,7 @@ Before the first run, you need to configure the `.env` file.
 2. **Copy and paste** the content below into the `.env` file and **fill in your token**:
 
     ```
-    HUGGING_FACE_TOKEN="hf_TWOJ_SKOPIOWANY_TOKEN"
+    HUGGING_FACE_TOKEN="hf_TOKEN"
     DEFAULT_MODEL="large-v2"
     DEFAULT_SPEAKERS=2
     DEFAULT_LANGUAGE="pl"
@@ -68,7 +68,7 @@ Before the first run, you need to configure the `.env` file.
 
 The script will use the settings from the `.env` file and automatically detect the best options for your hardware.
 ```bash
-python3 avi2text.py "sciezka/do/mojego_wideo.mp4"
+python3 avi2text.py "video.mp4"
 ```
 
 ### Advanced Options and Optimization
@@ -89,6 +89,6 @@ You can customize the script's behavior using flags:
 
 Example of maximum optimization on a CPU:
 ```bash
-python3 avi2text.py "dlugie_nagranie.avi" --model medium --compute_type int8
+python3 avi2text.py "video.avi" --model medium --compute_type int8
 ```
 
