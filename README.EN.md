@@ -28,6 +28,9 @@ This Python script is used for the automatic transcription of video files (e.g.,
 
 1. **Clone or download the repository** and navigate to the script's folder.
 
+2. **Install PyTorch**: Go to the [official PyTorch website](https://pytorch.org/get-started/locally/) and select the configuration appropriate for your system (e.g., `Stable`, `Pip`, `Python`, `CUDA` or `CPU`). Copy and run the generated command.
+
+3. **Install the remaining dependencies** using the `requirements.txt` file:
     ```bash
     git clone https://github.com/pk2/avi2text.git
     cd avi2text
