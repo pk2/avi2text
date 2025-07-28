@@ -1,12 +1,12 @@
 # Skrypt do Transkrypcji Wideo z Rozpoznawaniem Mówców
 
-Ten zaawansowany skrypt w języku Python służy do automatycznej transkrypcji plików wideo (np. `.avi`, `.mp4`). Jego główne funkcje to:
+Ten skrypt w Python służy do automatycznej transkrypcji plików wideo (np. `.avi`, `.mp4`). Jego główne funkcje to:
 
 -   **Ekstrakcja audio**: Automatycznie wyodrębnia ścieżkę dźwiękową z pliku wideo.
 -   **Transkrypcja mowy na tekst**: Wykorzystuje model `WhisperX` do precyzyjnej zamiany mowy na tekst.
 -   **Rozpoznawanie mówców (Diarization)**: Identyfikuje, kto mówi w danym momencie i przypisuje mu odpowiednie kwestie.
 -   **Zapis postępu**: Tworzy folder roboczy (`nazwa_pliku_work`), w którym zapisuje wyniki pośrednie. W razie błędu lub przerwania pracy, skrypt można uruchomić ponownie, a on wznowi działanie od ostatniego udanego etapu.
--   **Zapis do `.docx`**: Generuje czytelny plik Word z finalną transkrypcją, z pogrubionymi etykietami mówców.
+-   **Zapis do `.docx`**: Generuje czytelny plik Word z finalną transkrypcją, z etykietami mówców.
 -   **Konfiguracja przez `.env`**: Umożliwia łatwe zarządzanie ustawieniami za pomocą pliku `.env`.
 -   **Zaawansowane optymalizacje**: Obsługuje VAD (Wykrywanie Aktywności Głosowej) oraz silnik CTranslate2 dla maksymalnej wydajności na CPU.
 
@@ -75,5 +75,7 @@ Możesz dostosować działanie skryptu za pomocą flag:
 
 Przykład maksymalnej optymalizacji na CPU:
 
+```bash
 python3 avi2text.py "dlugie_nagranie.avi" --model medium --compute_type int8
+```
 
