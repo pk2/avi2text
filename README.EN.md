@@ -75,7 +75,7 @@ python3 avi2text.py "video.mp4"
 
 You can customize the script's behavior using flags:
 
-`--liczba_mowcow LICZBA`: Specifies the exact number of speakers.
+`--liczba_mowcow NUMBER`: Specifies the exact number of speakers.
 
 `--model MODEL`: Selects a different Whisper model (e.g., `medium`, `small`).
 
