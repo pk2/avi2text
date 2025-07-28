@@ -11,7 +11,6 @@ from whisperx.diarize import DiarizationPipeline
 from docx import Document
 from docx.shared import RGBColor
 from docx.enum.text import WD_UNDERLINE
-from docx.enum.lang import WD_LANG_ID # <<< NOWY IMPORT DO USTAWIANIA JĘZYKA
 import json
 import pickle
 from dotenv import load_dotenv
@@ -28,20 +27,16 @@ def zapisz_z_sledzeniem_zmian(paragraph, original_text, corrected_text):
     
     for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
         if opcode == 'equal':
-            # Tekst bez zmian
             paragraph.add_run(original_text[i1:i2])
         elif opcode == 'delete':
-            # Tekst usunięty
             run = paragraph.add_run(original_text[i1:i2])
             run.font.strike = True
             run.font.color.rgb = RGBColor(255, 0, 0)
         elif opcode == 'insert':
-            # Tekst dodany
             run = paragraph.add_run(corrected_text[j1:j2])
             run.font.underline = WD_UNDERLINE.SINGLE
             run.font.color.rgb = RGBColor(0, 128, 0)
         elif opcode == 'replace':
-            # Tekst zamieniony (usunięty + dodany)
             run_del = paragraph.add_run(original_text[i1:i2])
             run_del.font.strike = True
             run_del.font.color.rgb = RGBColor(255, 0, 0)
@@ -176,10 +171,10 @@ def transkrybuj_i_rozpoznaj_mowcow(
     print("Krok 7/8: Inicjowanie zaawansowanej korekty gramatycznej (LanguageTool)...")
     tool = None
     try:
-        # Użyj mapowania, aby obsłużyć różne warianty językowe
         lang_map_lt = {'pl': 'pl-PL', 'en': 'en-US', 'de': 'de-DE'}
         lt_lang_code = lang_map_lt.get(jezyk, jezyk)
         tool = language_tool_python.LanguageTool(lt_lang_code)
+
     except Exception as e:
         print(f"BŁĄD: Nie udało się zainicjować LanguageTool. Upewnij się, że masz zainstalowaną Javę. Błąd: {e}")
 
@@ -187,21 +182,6 @@ def transkrybuj_i_rozpoznaj_mowcow(
     print(f"Krok 8/8: Zapisywanie wyniku do pliku {sciezka_pliku_docx}...")
     try:
         doc = Document()
-
-        # <<< NOWA SEKCJA: USTAWIANIE JĘZYKA DOKUMENTU >>>
-        style = doc.styles['Normal']
-        font = style.font
-        
-        language_map_docx = {
-            'pl': WD_LANG_ID.POLISH,
-            'en': WD_LANG_ID.ENGLISH_US,
-            'de': WD_LANG_ID.GERMAN,
-        }
-        
-        if jezyk in language_map_docx:
-            font.language_id = language_map_docx[jezyk]
-        # <<< KONIEC NOWEJ SEKCJI >>>
-
         doc.add_heading(f'Transkrypcja pliku: {os.path.basename(sciezka_pliku_wideo)}', 0)
         
         aktualny_mowca = None
@@ -270,6 +250,7 @@ if __name__ == "__main__":
     parser.add_argument("--cpu_threads", type=int, default=os.cpu_count(), help="Liczba wątków CPU do użycia.")
     parser.add_argument("--compute_type", type=str, default=default_compute_type, choices=["float16", "float32", "int8", "int8_float16"], help=f"Typ obliczeń. Domyślnie: '{default_compute_type}'.")
     parser.add_argument("--beam_size", type=int, default=5, help="Liczba 'promieni' w beam search.")
+    
     args = parser.parse_args()
 
     if args.liczba_mowcow is None:
