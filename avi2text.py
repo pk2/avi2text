@@ -2,16 +2,11 @@
 
 import os
 import sys
-import tempfile
 import argparse
 import moviepy.editor as mp
 import torch
 import whisperx
 from whisperx.diarize import DiarizationPipeline
-from docx import Document
-from docx.shared import RGBColor
-from docx.enum.text import WD_UNDERLINE
-from docx.oxml.ns import qn
 import json
 import pickle
 from dotenv import load_dotenv
@@ -19,104 +14,416 @@ import logging
 import language_tool_python
 import difflib
 from datetime import timedelta
-
-def set_document_language(doc, language_code):
-    """
-    Ustawia język dokumentu Word.
-    Args:
-        doc: Obiekt Document z python-docx
-        language_code: Kod języka (np. 'pl-PL', 'en-US', 'de-DE')
-    """
-    lang_map = {
-        'pl': 'pl-PL',
-        'en': 'en-US',
-        'de': 'de-DE',
-        'fr': 'fr-FR',
-        'es': 'es-ES',
-        'it': 'it-IT',
-        'ru': 'ru-RU',
-        'cs': 'cs-CZ',
-        'sk': 'sk-SK'
-    }
-
-    if language_code in lang_map:
-        language_code = lang_map[language_code]
-
-    try:
-        doc_element = doc._element
-        doc_element.set(qn('xml:lang'), language_code)
-        styles = doc.styles
-        default_style = styles['Normal']
-        default_style.font.name = 'Calibri'
-        rPr = default_style._element.get_or_add_rPr()
-        lang_element = rPr.find(qn('w:lang'))
-        if lang_element is None:
-            lang_element = rPr.makeelement(qn('w:lang'))
-            rPr.append(lang_element)
-        lang_element.set(qn('w:val'), language_code)
-        lang_element.set(qn('w:eastAsia'), language_code)
-        lang_element.set(qn('w:bidi'), language_code)
-    except Exception as e:
-        print(f"Ostrzeżenie: Nie udało się ustawić języka dokumentu: {e}")
-        pass
-
-def zapisz_z_sledzeniem_zmian(paragraph, original_text, corrected_text, language_code=None):
-    """
-    Porównuje dwa teksty i zapisuje je do akapitu, symulując śledzenie zmian.
-    Tekst usunięty jest przekreślony, a dodany podkreślony.
-    Args:
-        paragraph: Akapit do którego dodawany jest tekst
-        original_text: Oryginalny tekst
-        corrected_text: Poprawiony tekst
-        language_code: Kod języka dla run-ów tekstu
-    """
-    matcher = difflib.SequenceMatcher(None, original_text, corrected_text)
-    def set_run_language(run, lang_code):
-        if lang_code:
-            try:
-                rPr = run._element.get_or_add_rPr()
-                lang_element = rPr.find(qn('w:lang'))
-                if lang_element is None:
-                    lang_element = rPr.makeelement(qn('w:lang'))
-                    rPr.append(lang_element)
-                lang_element.set(qn('w:val'), lang_code)
-            except Exception:
-                pass
-    for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
-        if opcode == 'equal':
-            run = paragraph.add_run(original_text[i1:i2])
-            set_run_language(run, language_code)
-        elif opcode == 'delete':
-            run = paragraph.add_run(original_text[i1:i2])
-            run.font.strike = True
-            run.font.color.rgb = RGBColor(255, 0, 0)
-            set_run_language(run, language_code)
-        elif opcode == 'insert':
-            run = paragraph.add_run(corrected_text[j1:j2])
-            run.font.underline = WD_UNDERLINE.SINGLE
-            run.font.color.rgb = RGBColor(0, 128, 0)
-            set_run_language(run, language_code)
-        elif opcode == 'replace':
-            run_del = paragraph.add_run(original_text[i1:i2])
-            run_del.font.strike = True
-            run_del.font.color.rgb = RGBColor(255, 0, 0)
-            set_run_language(run_del, language_code)
-            run_ins = paragraph.add_run(corrected_text[j1:j2])
-            run_ins.font.underline = WD_UNDERLINE.SINGLE
-            run_ins.font.color.rgb = RGBColor(0, 128, 0)
-            set_run_language(run_ins, language_code)
+import base64
+import webbrowser
 
 def format_timestamp(seconds):
+    """Formats seconds into HH:MM:SS format."""
     td = timedelta(seconds=float(seconds))
     total_seconds = int(td.total_seconds())
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
-    seconds = total_seconds % 60
-    return f"{hours:02}:{minutes:02}:{seconds:02}"
+    seconds_val = total_seconds % 60
+    return f"{hours:02}:{minutes:02}:{seconds_val:02}"
 
-def transkrybuj_i_rozpoznaj_mowcow(
+def generate_html_output(transcription_data, audio_clips_relative_paths, original_filename, output_html_path):
+    """
+    Generates an HTML file with an interactive transcription editor using relative paths for audio.
+    """
+    print("Rozpoczynanie generowania pliku HTML...")
+    
+    # Krok 1: Wstrzyknij dane (w tym ścieżki do audio) do szablonu JavaScript
+    injected_data_script = f"""
+        const transcriptionData = {json.dumps(transcription_data, ensure_ascii=False)};
+        const audioPaths = {json.dumps(audio_clips_relative_paths)};
+        const originalVideoFile = {{ name: {json.dumps(original_filename)} }};
+    """
+
+    # Krok 2: Stwórz pełny kod HTML jako string, osadzając style
+    html_template = f"""
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <title>Interaktywna Transkrypcja: {original_filename}</title>
+    <style>
+        /* Embedded CSS - Based on TailwindCSS and custom styles */
+        :root {{ --tw-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }}
+        *, ::before, ::after {{ box-sizing: border-box; border-width: 0; border-style: solid; border-color: #e5e7eb; }}
+        html {{ line-height: 1.5; -webkit-text-size-adjust: 100%; -moz-tab-size: 4; tab-size: 4; font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"; }}
+        body {{ margin: 0; line-height: inherit; font-family: 'Inter', sans-serif; background-color: #f3f4f6; color: #1f2937; }}
+        .container {{ width: 100%; max-width: 64rem; margin-left: auto; margin-right: auto; padding: 1rem 2rem; }}
+        h1 {{ font-size: 2.25rem; line-height: 2.5rem; font-weight: 700; color: #111827; }}
+        p {{ margin-top: 0.5rem; color: #4b5563; }}
+        header, footer {{ text-align: center; }}
+        header {{ margin-bottom: 2rem; }}
+        footer {{ margin-top: 3rem; font-size: 0.875rem; line-height: 1.25rem; color: #6b7280; }}
+        main > div > div {{ background-color: #ffffff; padding: 1.5rem; border-radius: 0.5rem; margin-bottom: 1.5rem; box-shadow: var(--tw-shadow); }}
+        button {{ font-weight: 700; padding: 0.5rem 1rem; border-radius: 0.5rem; transition-property: background-color, border-color, color, fill, stroke; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 150ms; cursor: pointer; }}
+        .bg-gray-600 {{ background-color: #4b5563; color: #ffffff; }} .bg-gray-600:hover {{ background-color: #374151; }}
+        .bg-blue-100 {{ background-color: #dbeafe; color: #2563eb; }} .bg-blue-100:hover {{ background-color: #bfdbfe; }}
+        .sticky {{ position: -webkit-sticky; position: sticky; }}
+        .top-0 {{ top: 0; }} .z-10 {{ z-index: 10; }} .py-4 {{ padding-top: 1rem; padding-bottom: 1rem; }}
+        .backdrop-blur-sm {{ --tw-backdrop-blur: blur(4px); backdrop-filter: var(--tw-backdrop-blur); }}
+        .bg-gray-100\/95 {{ background-color: rgba(243, 244, 246, 0.95); }}
+        .flex {{ display: flex; }} .flex-wrap {{ flex-wrap: wrap; }} .items-center {{ align-items: center; }} .gap-6 {{ gap: 1.5rem; }} .gap-4 {{ gap: 1rem; }} .gap-2 {{ gap: 0.5rem; }}
+        .flex-grow {{ flex-grow: 1; }} .min-w-\[200px\] {{ min-width: 200px; }}
+        .grid {{ display: grid; }} .grid-cols-1 {{ grid-template-columns: repeat(1, minmax(0, 1fr)); }}
+        label {{ display: block; font-weight: 500; color: #374151; }}
+        input[type="range"] {{ width: 100%; height: 0.5rem; background-color: #e5e7eb; border-radius: 9999px; -webkit-appearance: none; appearance: none; cursor: pointer; }}
+        input[type="checkbox"] {{ height: 1rem; width: 1rem; border-radius: 0.25rem; border-color: #6b7280; color: #4f46e5; }}
+        input[type="text"] {{ flex-grow: 1; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 0.375rem; }}
+        #transcription-container {{ space-y: 1rem; }}
+        .segment-wrapper {{ display: flex; align-items: flex-start; gap: 1rem; padding: 0.75rem; border-bottom: 1px solid #e5e7eb; border-radius: 0.5rem; transition: background-color 0.3s, border-color 0.3s; border-left: 4px solid transparent; }}
+        .segment-wrapper:last-child {{ border-bottom: none; }}
+        .play-pause-btn {{ flex-shrink: 0; width: 2.75rem; height: 2.75rem; border-radius: 9999px; display: flex; align-items: center; justify-content: center; padding: 0; }}
+        .play-pause-btn svg {{ height: 2rem; width: 2rem; }}
+        .textarea-wrapper {{ position: relative; width: 100%; }}
+        textarea, .highlight-div {{ overflow-y: hidden; resize: none; width: 100%; margin-top: 0.25rem; padding: 0.5rem; padding-bottom: 2rem; border: 1px solid #d1d5db; border-radius: 0.375rem; transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1); font: inherit; letter-spacing: inherit; }}
+        .highlight-div {{ position: absolute; top: 0; left: 0; z-index: 1; color: transparent; white-space: pre-wrap; word-wrap: break-word; pointer-events: none; }}
+        textarea {{ position: relative; z-index: 2; background: transparent; color: inherit; caret-color: black; }}
+        .tooltip {{ position: relative; display: inline-block; }}
+        .tooltip .tooltiptext {{ visibility: hidden; width: 140px; background-color: #333; color: #fff; text-align: center; border-radius: 6px; padding: 5px; position: absolute; z-index: 1; bottom: 125%; left: 50%; margin-left: -70px; opacity: 0; transition: opacity 0.3s; }}
+        .tooltip .tooltiptext::after {{ content: ""; position: absolute; top: 100%; left: 50%; margin-left: -5px; border-width: 5px; border-style: solid; border-color: #333 transparent transparent transparent; }}
+        .tooltip:hover .tooltiptext {{ visibility: visible; opacity: 1; }}
+        .playing {{ background-color: #eff6ff !important; border-left-color: #3b82f6 !important; }}
+        .edited-word {{ background-color: #fef9c3; border-radius: 3px; }}
+        .edited-frame {{ border: 1px solid #facc15 !important; }}
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+    <div class="container mx-auto p-4 md:p-8 max-w-5xl">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Interaktywna Transkrypcja</h1>
+            <p class="text-gray-600 mt-2">Plik źródłowy: <strong>{original_filename}</strong></p>
+        </header>
+        <main>
+            <div id="editor-container">
+                <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+                    <div id="speaker-inputs-container" class="grid grid-cols-1 gap-4"></div>
+                </div>
+                
+                <div id="controls-wrapper" class="sticky top-0 z-10 bg-gray-100/95 backdrop-blur-sm py-4 mb-6">
+                    <div class="bg-white p-6 rounded-lg shadow-md">
+                         <div class="flex flex-wrap items-center gap-6">
+                            <div class="flex-grow min-w-[200px]">
+                                <label for="playback-speed" class="block font-medium text-gray-700">Prędkość odtwarzania:</label>
+                                <div class="flex items-center gap-2">
+                                    <input type="range" id="playback-speed" min="0.5" max="3" step="0.25" value="1" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                                    <span id="speed-label" class="font-mono text-gray-700 w-10 text-center">1.0x</span>
+                                </div>
+                            </div>
+                            <div class="flex items-center">
+                                <input type="checkbox" id="autoplay-checkbox" class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" checked>
+                                <label for="autoplay-checkbox" class="ml-2 block text-sm text-gray-900">Autoodtwarzanie</label>
+                            </div>
+                            <div class="flex gap-2">
+                                 <div class="tooltip">
+                                    <button id="copy-text-button-top" class="bg-gray-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-gray-700 transition-colors">
+                                        Kopiuj tekst
+                                    </button>
+                                    <span class="tooltiptext" id="copy-tooltip-top">Kopiuj do schowka</span>
+                                </div>
+                            </div>
+                         </div>
+                    </div>
+                </div>
+
+                <div>
+                    <div id="transcription-container" class="bg-white p-6 rounded-lg shadow-md space-y-4"></div>
+                </div>
+            </div>
+        </main>
+        <footer class="text-center mt-12 text-gray-500 text-sm">
+            <p>Wygenerowano za pomocą skryptu transkrypcyjnego.</p>
+        </footer>
+    </div>
+    <script>
+        {injected_data_script}
+
+        const speakerInputsContainer = document.getElementById('speaker-inputs-container');
+        const transcriptionContainer = document.getElementById('transcription-container');
+        const copyTextButtonTop = document.getElementById('copy-text-button-top');
+        const playbackSpeed = document.getElementById('playback-speed');
+        const speedLabel = document.getElementById('speed-label');
+        const autoplayCheckbox = document.getElementById('autoplay-checkbox');
+        const copyTooltipTop = document.getElementById('copy-tooltip-top');
+
+        const playIconSVG = `<svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`;
+        const pauseIconSVG = `<svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`;
+
+        let speakerMap = {{}};
+        let currentAudio = null;
+        let currentlyPlayingSegment = null;
+
+        function autoResize(element) {{
+            element.style.height = 'auto';
+            element.style.height = (element.scrollHeight + 16) + 'px';
+        }}
+
+        function populateSpeakerEditor(segments) {{
+            speakerInputsContainer.innerHTML = '';
+            const uniqueSpeakers = [...new Set(segments.map(s => s.speaker))].sort((a, b) => {{
+                try {{
+                    const numA = parseInt(a.match(/(\\d+)/)[0]);
+                    const numB = parseInt(b.match(/(\\d+)/)[0]);
+                    return numA - numB;
+                }} catch (e) {{
+                    return a.localeCompare(b);
+                }}
+            }});
+            
+            uniqueSpeakers.forEach(speaker => {{
+                speakerMap[speaker] = speaker;
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.className = 'w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500';
+                input.value = speaker;
+                input.dataset.originalSpeaker = speaker;
+                
+                input.addEventListener('input', (e) => {{
+                    const originalSpeaker = e.target.dataset.originalSpeaker;
+                    const newName = e.target.value;
+                    speakerMap[originalSpeaker] = newName;
+                    document.querySelectorAll(`.speaker-tag[data-original-speaker="${{originalSpeaker}}"]`).forEach(span => {{
+                        span.textContent = newName;
+                    }});
+                }});
+                speakerInputsContainer.appendChild(input);
+            }});
+        }}
+
+        function displayTranscription(segments) {{
+            transcriptionContainer.innerHTML = '';
+            segments.forEach((segment, index) => {{
+                const segmentDiv = document.createElement('div');
+                segmentDiv.className = 'segment-wrapper flex items-start space-x-4 p-3 border-b border-gray-200 last:border-b-0 rounded-lg transition-colors duration-300 border-l-4 border-transparent';
+                segmentDiv.id = `segment-${{index}}`;
+                
+                const playButton = document.createElement('button');
+                playButton.className = 'play-pause-btn flex-shrink-0 w-10 h-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center hover:bg-blue-200 transition-colors';
+                playButton.innerHTML = playIconSVG;
+                playButton.dataset.index = index;
+
+                if (!audioPaths[index]) {{
+                    playButton.disabled = true;
+                    playButton.classList.add('opacity-50', 'cursor-not-allowed');
+                }}
+
+                const contentDiv = document.createElement('div');
+                contentDiv.className = 'flex-grow';
+                const headerDiv = document.createElement('div');
+                headerDiv.className = 'flex items-center space-x-3 text-sm';
+                const speakerTag = document.createElement('span');
+                speakerTag.className = 'speaker-tag font-bold text-gray-900';
+                speakerTag.dataset.originalSpeaker = segment.speaker;
+                speakerTag.textContent = speakerMap[segment.speaker] || segment.speaker;
+                const timeTag = document.createElement('span');
+                timeTag.className = 'text-gray-500';
+                timeTag.textContent = `[${{new Date(segment.start * 1000).toISOString().substr(14, 5)}}]`;
+                headerDiv.appendChild(speakerTag);
+                headerDiv.appendChild(timeTag);
+
+                const textareaWrapper = document.createElement('div');
+                textareaWrapper.className = 'textarea-wrapper';
+                
+                const highlightDiv = document.createElement('div');
+                highlightDiv.className = 'highlight-div';
+                
+                const textInput = document.createElement('textarea');
+                textInput.className = 'w-full mt-1 p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition';
+                textInput.value = segment.text;
+                textInput.rows = 1;
+                textInput.dataset.index = index;
+                textInput.dataset.originalText = segment.text;
+                
+                updateHighlight(textInput, highlightDiv);
+
+                textInput.addEventListener('input', (e) => {{
+                    transcriptionData[e.target.dataset.index].text = e.target.value;
+                    autoResize(e.target);
+                    autoResize(highlightDiv);
+                    updateHighlight(e.target, highlightDiv);
+                }});
+
+                textareaWrapper.appendChild(highlightDiv);
+                textareaWrapper.appendChild(textInput);
+                contentDiv.appendChild(headerDiv);
+                contentDiv.appendChild(textareaWrapper);
+                segmentDiv.appendChild(playButton);
+                segmentDiv.appendChild(contentDiv);
+                transcriptionContainer.appendChild(segmentDiv);
+                autoResize(textInput);
+                autoResize(highlightDiv);
+            }});
+            
+            document.querySelectorAll('.play-pause-btn').forEach(button => {{
+                button.addEventListener('click', handlePlayPause);
+            }});
+        }}
+
+        function updateHighlight(textarea, highlightDiv) {{
+            const originalText = textarea.dataset.originalText;
+            const currentText = textarea.value;
+            highlightDiv.innerHTML = diffWords(originalText, currentText);
+            
+            if (originalText !== currentText) {{
+                textarea.classList.add('edited-frame');
+            }} else {{
+                textarea.classList.remove('edited-frame');
+            }}
+        }}
+
+        function diffWords(original, current) {{
+            const originalWords = original.split(/(\\s+)/);
+            const currentWords = current.split(/(\\s+)/);
+            if (original === current) return current.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+            const dp = Array(currentWords.length + 1).fill(null).map(() => Array(originalWords.length + 1).fill(0));
+            for (let i = 1; i <= currentWords.length; i++) {{
+                for (let j = 1; j <= originalWords.length; j++) {{
+                    if (currentWords[i - 1] === originalWords[j - 1]) {{
+                        dp[i][j] = 1 + dp[i - 1][j - 1];
+                    }} else {{
+                        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+                    }}
+                }}
+            }}
+
+            let i = currentWords.length;
+            let j = originalWords.length;
+            const result = [];
+            while (i > 0 || j > 0) {{
+                if (i > 0 && j > 0 && currentWords[i - 1] === originalWords[j - 1]) {{
+                    result.unshift(currentWords[i - 1].replace(/</g, "&lt;").replace(/>/g, "&gt;"));
+                    i--; j--;
+                }} else if (i > 0 && (j === 0 || dp[i][j - 1] <= dp[i - 1][j])) {{
+                    result.unshift(`<mark class="edited-word">${{currentWords[i - 1].replace(/</g, "&lt;").replace(/>/g, "&gt;")}}</mark>`);
+                    i--;
+                }} else if (j > 0 && (i === 0 || dp[i][j - 1] > dp[i - 1][j])) {{
+                    j--;
+                }} else {{
+                    break;
+                }}
+            }}
+            return result.join('');
+        }}
+        
+        function updateAllPlayIcons(state, activeIndex = -1) {{
+            const allButtons = document.querySelectorAll('.play-pause-btn');
+            allButtons.forEach((btn, index) => {{
+                if (index === activeIndex && state === 'playing') {{
+                    btn.innerHTML = pauseIconSVG;
+                }} else {{
+                    btn.innerHTML = playIconSVG;
+                }}
+            }});
+        }}
+
+        function handlePlayPause(event) {{
+            const button = event.currentTarget;
+            const index = parseInt(button.dataset.index);
+            const segmentDiv = document.getElementById(`segment-${{index}}`);
+
+            if (currentlyPlayingSegment === segmentDiv && currentAudio && !currentAudio.paused) {{
+                currentAudio.pause();
+            }} else {{
+                if (currentAudio) {{
+                    currentAudio.pause();
+                }}
+                currentAudio = new Audio(audioPaths[index]);
+                currentAudio.playbackRate = parseFloat(playbackSpeed.value);
+                currentAudio.play();
+                
+                document.querySelectorAll('.segment-wrapper').forEach(el => el.classList.remove('playing'));
+                segmentDiv.classList.add('playing');
+                currentlyPlayingSegment = segmentDiv;
+                
+                segmentDiv.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+
+                currentAudio.onplay = () => {{
+                    updateAllPlayIcons('playing', index);
+                }};
+                currentAudio.onpause = () => {{
+                    updateAllPlayIcons('paused');
+                }};
+                
+                currentAudio.onended = () => {{
+                     if (autoplayCheckbox.checked) {{
+                        const nextButton = document.querySelector(`.play-pause-btn[data-index="${{index + 1}}"]`);
+                        if (nextButton) {{
+                            nextButton.click();
+                        }} else {{
+                            segmentDiv.classList.remove('playing');
+                            currentlyPlayingSegment = null;
+                            updateAllPlayIcons('paused');
+                        }}
+                    }} else {{
+                        updateAllPlayIcons('paused');
+                    }}
+                }};
+            }}
+        }}
+
+        function copyTranscriptionToClipboard() {{
+            const textToCopy = transcriptionData.map(segment => {{
+                const speakerName = speakerMap[segment.speaker] || segment.speaker;
+                const timestamp = `[${{new Date(segment.start * 1000).toISOString().substr(14, 5)}}]`;
+                return `${{timestamp}} ${{speakerName}}: ${{segment.text}}`;
+            }}).join('\\n');
+
+            navigator.clipboard.writeText(textToCopy).then(() => {{
+                copyTooltipTop.textContent = "Skopiowano!";
+                setTimeout(() => {{ 
+                    copyTooltipTop.textContent = "Kopiuj do schowka";
+                }}, 2000);
+            }}, (err) => {{
+                console.error('Błąd kopiowania: ', err);
+                copyTooltipTop.textContent = "Błąd!";
+                setTimeout(() => {{ 
+                    copyTooltipTop.textContent = "Kopiuj do schowka";
+                }}, 2000);
+            }});
+        }}
+
+        // Inicjalizacja
+        document.addEventListener('DOMContentLoaded', () => {{
+            populateSpeakerEditor(transcriptionData);
+            displayTranscription(transcriptionData);
+            updateAllPlayIcons('paused');
+
+            playbackSpeed.addEventListener('input', (e) => {{
+                const speed = parseFloat(e.target.value);
+                speedLabel.textContent = `${{speed.toFixed(2)}}x`;
+                if (currentAudio) {{
+                    currentAudio.playbackRate = speed;
+                }}
+            }});
+            
+            copyTextButtonTop.addEventListener('click', copyTranscriptionToClipboard);
+        }});
+    </script>
+</body>
+</html>
+    """
+
+    # Krok 4: Zapisz string do pliku .html
+    try:
+        with open(output_html_path, 'w', encoding='utf-8') as f:
+            f.write(html_template)
+        print(f"Pomyślnie wygenerowano plik: {output_html_path}")
+        # Krok 5: Otwórz plik w przeglądarce
+        webbrowser.open(f"file://{os.path.realpath(output_html_path)}")
+    except Exception as e:
+        print(f"BŁĄD podczas zapisu lub otwierania pliku HTML: {e}")
+
+
+def transkrybuj_i_generuj_html(
     sciezka_pliku_wideo: str,
-    sciezka_pliku_docx: str,
     liczba_mowcow: int,
     model_whisper: str,
     jezyk: str,
@@ -125,10 +432,8 @@ def transkrybuj_i_rozpoznaj_mowcow(
     asr_options: dict
 ):
     """
-    Wyodrębnia dźwięk, transkrybuje, dzieli na mówców, przeprowadza korektę
-    i zapisuje wynik do .docx z wizualnym śledzeniem zmian i znacznikami czasu.
+    Pełny proces: od wideo do interaktywnego pliku HTML.
     """
-
     logging.getLogger('pytorch_lightning').setLevel(logging.ERROR)
     logging.getLogger('pyannote').setLevel(logging.ERROR)
     logging.getLogger('torch').setLevel(logging.ERROR)
@@ -139,233 +444,122 @@ def transkrybuj_i_rozpoznaj_mowcow(
     nazwa_pliku_bazowa = os.path.splitext(os.path.basename(sciezka_pliku_wideo))[0]
     folder_roboczy = f"{nazwa_pliku_bazowa}_work"
     os.makedirs(folder_roboczy, exist_ok=True)
-
     print(f"Używam folderu roboczego: {folder_roboczy}")
 
-    sciezka_pliku_audio = os.path.join(folder_roboczy, "audio.flac")
-    sciezka_transkrypcji = os.path.join(folder_roboczy, "transkrypcja.json")
-    sciezka_aligned = os.path.join(folder_roboczy, "aligned.json")
-    sciezka_diarization = os.path.join(folder_roboczy, "diarization.pkl")
+    folder_klipow_audio = os.path.join(folder_roboczy, "audio_clips")
+    os.makedirs(folder_klipow_audio, exist_ok=True)
+
+    sciezka_pliku_audio = os.path.join(folder_roboczy, "audio.wav")
     sciezka_wyniku_finalnego = os.path.join(folder_roboczy, "wynik_finalny.json")
 
-    # Krok 2: Wyodrębnienie audio
     if not os.path.exists(sciezka_pliku_audio):
-        print("Krok 1/8: Wyodrębnianie ścieżki audio...")
-        if not os.path.exists(sciezka_pliku_wideo):
-            print(f"BŁĄD: Plik '{sciezka_pliku_wideo}' nie został znaleziony.")
-            sys.exit(1)
+        print("Krok 1/5: Wyodrębnianie ścieżki audio...")
         try:
             wideo = mp.VideoFileClip(sciezka_pliku_wideo)
             if wideo.audio is None:
-                print(f"BŁĄD: Plik wideo '{sciezka_pliku_wideo}' nie zawiera ścieżki audio.")
-                sys.exit(1)
-            wideo.audio.write_audiofile(sciezka_pliku_audio, codec='flac', logger=None)
-            print(f"Audio zostało pomyślnie zapisane w formacie FLAC: {sciezka_pliku_audio}")
+                sys.exit(f"BŁĄD: Plik wideo '{sciezka_pliku_wideo}' nie zawiera ścieżki audio.")
+            wideo.audio.write_audiofile(sciezka_pliku_audio, codec='pcm_s16le', logger=None)
         except Exception as e:
-            print(f"BŁĄD podczas przetwarzania wideo: {e}")
-            sys.exit(1)
+            sys.exit(f"BŁĄD podczas przetwarzania wideo: {e}")
     else:
-        print("Krok 1/8: Pomijanie ekstrakcji audio (plik już istnieje).")
+        print("Krok 1/5: Pomijanie ekstrakcji audio.")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Krok 2/8: Używane urządzenie: {device}")
-    if device == "cpu":
-        print("OSTRZEŻENIE: Brak GPU. Przetwarzanie na CPU będzie znacznie wolniejsze.")
+    print(f"Krok 2/5: Używane urządzenie: {device}")
 
-    # Krok 4: Transkrypcja
-    if not os.path.exists(sciezka_transkrypcji):
-        print(f"Krok 3/8: Ładowanie modelu WhisperX ('{model_whisper}')...")
-        model = None
-        try:
-            model = whisperx.load_model(model_whisper, device, compute_type=compute_type, asr_options=asr_options)
-            audio = whisperx.load_audio(sciezka_pliku_audio)
-            print("Krok 4/8: Rozpoczynanie transkrypcji (to może potrwać)...")
-            wynik_transkrypcji = model.transcribe(audio, batch_size=batch_size, language=jezyk, print_progress=True)
-            with open(sciezka_transkrypcji, 'w', encoding='utf-8') as f:
-                json.dump(wynik_transkrypcji, f, ensure_ascii=False, indent=4)
-            print(f"Transkrypcja zakończona i zapisana w: {sciezka_transkrypcji}")
-        except Exception as e:
-            print(f"BŁĄD podczas transkrypcji: {e}")
-            sys.exit(1)
-        finally:
-            if model is not None: del model
-    else:
-        print("Kroki 3/8 i 4/8: Pomijanie transkrypcji (pliki już istnieją).")
-
-    with open(sciezka_transkrypcji, 'r', encoding='utf-8') as f:
-        wynik_transkrypcji = json.load(f)
-
-    # Krok 5: Podział na mówców
     if not os.path.exists(sciezka_wyniku_finalnego):
-        model_a, diarize_model = None, None
-        try:
-            if not os.path.exists(sciezka_aligned):
-                print("Krok 5/8: Wyrównywanie transkrypcji...")
-                model_a, metadata = whisperx.load_align_model(language_code=wynik_transkrypcji["language"], device=device)
-                wynik_aligned = whisperx.align(
-                    wynik_transkrypcji["segments"],
-                    model_a, metadata,
-                    whisperx.load_audio(sciezka_pliku_audio),
-                    device,
-                    return_char_alignments=False
-                )
-                with open(sciezka_aligned, 'w', encoding='utf-8') as f:
-                    json.dump(wynik_aligned, f, ensure_ascii=False, indent=4)
-                print(f"Wyrównywanie zakończone i zapisane w: {sciezka_aligned}")
-                del model_a
-            else:
-                print("Krok 5/8: Pomijanie wyrównywania (plik już istnieje).")
-
-            with open(sciezka_aligned, 'r', encoding='utf-8') as f:
-                wynik_aligned = json.load(f)
-
-            if not os.path.exists(sciezka_diarization):
-                print("Krok 6/8: Rozpoznawanie mówców (diarization)...")
-                hf_token = os.environ.get("HUGGING_FACE_TOKEN")
-                if hf_token is None:
-                    print("\nBŁĄD KRYTYCZNY: Brak tokena HUGGING_FACE_TOKEN.")
-                    sys.exit(1)
-                diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
-                diarize_segments = diarize_model(
-                    sciezka_pliku_audio,
-                    min_speakers=liczba_mowcow,
-                    max_speakers=liczba_mowcow
-                )
-                with open(sciezka_diarization, 'wb') as f:
-                    pickle.dump(diarize_segments, f)
-                print(f"Diarization zakończony i zapisany w: {sciezka_diarization}")
-                del diarize_model
-            else:
-                print("Krok 6/8: Pomijanie diarization (plik już istnieje).")
-
-            with open(sciezka_diarization, 'rb') as f:
-                diarize_segments = pickle.load(f)
-
-            wynik_finalny = whisperx.assign_word_speakers(diarize_segments, wynik_aligned)
-            with open(sciezka_wyniku_finalnego, 'w', encoding='utf-8') as f:
-                json.dump(wynik_finalny, f, ensure_ascii=False, indent=4)
-            print(f"Przypisano mówców i zapisano wynik w: {sciezka_wyniku_finalnego}")
-        except Exception as e:
-            print(f"\nBŁĄD podczas rozpoznawania mówców: {e}")
-            sys.exit(1)
+        print(f"Krok 3/5: Transkrypcja i diarization...")
+        model = whisperx.load_model(model_whisper, device, compute_type=compute_type, asr_options=asr_options)
+        audio = whisperx.load_audio(sciezka_pliku_audio)
+        wynik_transkrypcji = model.transcribe(audio, batch_size=batch_size, language=jezyk, print_progress=True)
+        
+        model_a, metadata = whisperx.load_align_model(language_code=wynik_transkrypcji["language"], device=device)
+        wynik_aligned = whisperx.align(wynik_transkrypcji["segments"], model_a, metadata, audio, device, return_char_alignments=False)
+        
+        hf_token = os.environ.get("HUGGING_FACE_TOKEN")
+        if not hf_token:
+            sys.exit("BŁĄD KRYTYCZNY: Brak tokena HUGGING_FACE_TOKEN w zmiennych środowiskowych.")
+        diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
+        diarize_segments = diarize_model(sciezka_pliku_audio, min_speakers=liczba_mowcow, max_speakers=liczba_mowcow)
+        
+        wynik_finalny = whisperx.assign_word_speakers(diarize_segments, wynik_aligned)
+        with open(sciezka_wyniku_finalnego, 'w', encoding='utf-8') as f:
+            json.dump(wynik_finalny, f, ensure_ascii=False, indent=4)
+        del model, model_a, diarize_model
     else:
-        print("Kroki 5/8 i 6/8: Pomijanie (finalny plik z mówcami już istnieje).")
+        print("Krok 3/5: Pomijanie transkrypcji (plik już istnieje).")
+    
     with open(sciezka_wyniku_finalnego, 'r', encoding='utf-8') as f:
         wynik_finalny = json.load(f)
 
-    # Krok 7: Korekta tekstu
-    print("Krok 7/8: Inicjowanie zaawansowanej korekty gramatycznej (LanguageTool)...")
-    tool = None
-    try:
-        lang_map_lt = {'pl': 'pl-PL', 'en': 'en-US', 'de': 'de-DE'}
-        lt_lang_code = lang_map_lt.get(jezyk, jezyk)
-        tool = language_tool_python.LanguageTool(lt_lang_code)
-    except Exception as e:
-        print(f"BŁĄD: Nie udało się zainicjować LanguageTool. Upewnij się, że masz zainstalowaną Javę. Błąd: {e}")
+    print("Krok 4/5: Cięcie audio na klipy...")
+    glowny_klip_audio = mp.AudioFileClip(sciezka_pliku_audio)
+    audio_clips_paths = []
+    clip_counter = 0
+    
+    # Agregacja segmentów per mówca
+    aggregated_segments = []
+    current_segment = None
 
-    # Krok 8: Zapis do pliku Word
-    print(f"Krok 8/8: Zapisywanie wyniku do pliku {sciezka_pliku_docx}...")
-    try:
-        doc = Document()
-        set_document_language(doc, jezyk)
-        print(f"Ustawiono język dokumentu na: {jezyk}")
+    for segment in wynik_finalny.get("segments", []):
+        if "speaker" not in segment or not segment.get("text", "").strip():
+            continue
+        
+        speaker = segment["speaker"]
+        text = segment["text"].strip()
+        start = segment["start"]
+        end = segment["end"]
 
-        doc.add_heading(f'Transkrypcja pliku: {os.path.basename(sciezka_pliku_wideo)}', 0)
+        if current_segment and current_segment["speaker"] == speaker:
+            current_segment["text"] += " " + text
+            current_segment["end"] = end
+        else:
+            if current_segment:
+                aggregated_segments.append(current_segment)
+            current_segment = {
+                "speaker": speaker,
+                "text": text,
+                "start": start,
+                "end": end
+            }
+    if current_segment:
+        aggregated_segments.append(current_segment)
 
-        lang_map_docx = {
-            'pl': 'pl-PL', 'en': 'en-US', 'de': 'de-DE', 'fr': 'fr-FR', 'es': 'es-ES',
-            'it': 'it-IT', 'ru': 'ru-RU', 'cs': 'cs-CZ', 'sk': 'sk-SK'
-        }
-        docx_lang_code = lang_map_docx.get(jezyk, jezyk)
+    # Cięcie i zapisywanie klipów
+    for segment in aggregated_segments:
+        clip_filename = f"clip_{clip_counter:04d}.wav"
+        clip_path_abs = os.path.join(folder_klipow_audio, clip_filename)
+        
+        try:
+            subclip = glowny_klip_audio.subclip(segment["start"], segment["end"])
+            subclip.write_audiofile(clip_path_abs, codec='pcm_s16le', logger=None)
+            audio_clips_paths.append(clip_path_abs)
+            clip_counter += 1
+        except Exception as e:
+            print(f"Ostrzeżenie: Nie udało się wyciąć klipu dla segmentu {segment['start']}-{segment['end']}: {e}")
+            audio_clips_paths.append(None)
+    
+    # Przypisanie ścieżek do zagregowanych segmentów
+    for i, segment in enumerate(aggregated_segments):
+        segment["audio_path"] = audio_clips_paths[i] if i < len(audio_clips_paths) else None
+        segment["speaker"] = segment["speaker"].replace("SPEAKER_", "Mówca ")
 
-        aktualny_mowca = None
-        aktualna_kwestia = []
-        aktualny_start = None
+    print("Krok 5/5: Generowanie finalnego pliku HTML...")
+    output_html_path = f"{nazwa_pliku_bazowa}_transkrypcja.html"
+    generate_html_output(aggregated_segments, audio_clips_paths, os.path.basename(sciezka_pliku_wideo), output_html_path)
 
-        for segment in wynik_finalny["segments"]:
-            if "speaker" not in segment:
-                segment['speaker'] = "MÓWCA_NIEZNANY"
-            segment_speaker = segment["speaker"].replace("SPEAKER_", "Mówca ")
+    print("\n--- Zakończono pomyślnie! ---")
 
-            # Check for speaker change
-            if aktualny_mowca != segment_speaker and aktualny_mowca is not None:
-                tekst_do_korekty = ''.join(aktualna_kwestia).lstrip()
-                if tool:
-                    poprawiony_tekst = tool.correct(tekst_do_korekty)
-                else:
-                    poprawiony_tekst = tekst_do_korekty
-
-                # Insert timestamp from the first segment's start in this "kwestia"
-                timestamp_str = f"[{format_timestamp(aktualny_start)}] " if aktualny_start is not None else ""
-
-                p = doc.add_paragraph()
-                speaker_run = p.add_run(f"{timestamp_str}{aktualny_mowca}: ")
-                speaker_run.bold = True
-                try:
-                    rPr = speaker_run._element.get_or_add_rPr()
-                    lang_element = rPr.find(qn('w:lang'))
-                    if lang_element is None:
-                        lang_element = rPr.makeelement(qn('w:lang'))
-                        rPr.append(lang_element)
-                    lang_element.set(qn('w:val'), docx_lang_code)
-                except Exception:
-                    pass
-                zapisz_z_sledzeniem_zmian(p, tekst_do_korekty, poprawiony_tekst, docx_lang_code)
-
-                aktualna_kwestia = []
-                aktualny_start = None
-
-            # Fill current kwestia and record start
-            aktualny_mowca = segment_speaker
-            if aktualny_start is None and "start" in segment:
-                aktualny_start = segment["start"]
-            if 'words' in segment:
-                for word_info in segment['words']:
-                    aktualna_kwestia.append(word_info['word'] + " ")
-            else:
-                aktualna_kwestia.append(segment.get('text', '').strip() + " ")
-
-        # Write last kwestia (if any)
-        if aktualny_mowca is not None and aktualna_kwestia:
-            tekst_do_korekty = ''.join(aktualna_kwestia).lstrip()
-            if tool:
-                poprawiony_tekst = tool.correct(tekst_do_korekty)
-            else:
-                poprawiony_tekst = tekst_do_korekty
-            timestamp_str = f"[{format_timestamp(aktualny_start)}] " if aktualny_start is not None else ""
-            p = doc.add_paragraph()
-            speaker_run = p.add_run(f"{timestamp_str}{aktualny_mowca}: ")
-            speaker_run.bold = True
-            try:
-                rPr = speaker_run._element.get_or_add_rPr()
-                lang_element = rPr.find(qn('w:lang'))
-                if lang_element is None:
-                    lang_element = rPr.makeelement(qn('w:lang'))
-                    rPr.append(lang_element)
-                lang_element.set(qn('w:val'), docx_lang_code)
-            except Exception:
-                pass
-            zapisz_z_sledzeniem_zmian(p, tekst_do_korekty, poprawiony_tekst, docx_lang_code)
-
-        doc.save(sciezka_pliku_docx)
-        print("\n--- Zakończono pomyślnie! ---")
-        print(f"Wynik został zapisany w pliku: {sciezka_pliku_docx}")
-    except Exception as e:
-        print(f"BŁĄD podczas zapisu do pliku .docx: {e}")
-    finally:
-        if tool:
-            tool.close()
 
 if __name__ == "__main__":
     load_dotenv()
     default_compute_type = "float16" if torch.cuda.is_available() else "int8"
     parser = argparse.ArgumentParser(
-        description="Zaawansowana transkrypcja wideo z podziałem na mówców i zapisem do Word.",
+        description="Generuje interaktywną stronę HTML z transkrypcją wideo.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument("sciezka_wideo", type=str, help="Ścieżka do pliku wideo.")
-    parser.add_argument("--liczba_mowcow", type=int, default=os.getenv("DEFAULT_SPEAKERS", None), help="Liczba mówców.")
-    parser.add_argument("--plik_wyjsciowy", type=str, default=None, help="Nazwa pliku .docx.")
+    parser.add_argument("--liczba_mowcow", type=int, default=os.getenv("DEFAULT_SPEAKERS", None), help="Liczba mówców (wymagane).")
     parser.add_argument("--model", type=str, default=os.getenv("DEFAULT_MODEL", "large-v2"),
                         choices=["tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3"],
                         help="Model Whisper do użycia.")
@@ -379,19 +573,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     if args.liczba_mowcow is None:
-        print("BŁĄD: Liczba mówców jest wymagana.")
-        sys.exit(1)
-    plik_wyjsciowy = args.plik_wyjsciowy
-    if plik_wyjsciowy is None:
-        nazwa_bazowa = os.path.splitext(os.path.basename(args.sciezka_wideo))[0]
-        plik_wyjsciowy = f"{nazwa_bazowa}.docx"
+        sys.exit("BŁĄD: Argument --liczba_mowcow jest wymagany.")
+    
     if not torch.cuda.is_available():
         print(f"Ustawiam liczbę wątków CPU na: {args.cpu_threads}")
         torch.set_num_threads(args.cpu_threads)
+
     asr_options = {"beam_size": args.beam_size}
-    transkrybuj_i_rozpoznaj_mowcow(
+    
+    transkrybuj_i_generuj_html(
         args.sciezka_wideo,
-        plik_wyjsciowy,
         int(args.liczba_mowcow),
         args.model,
         args.jezyk,
