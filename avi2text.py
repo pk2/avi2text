@@ -18,19 +18,18 @@ from dotenv import load_dotenv
 import logging
 import language_tool_python
 import difflib
+from datetime import timedelta  # Needed for timestamp formatting
 
 def set_document_language(doc, language_code):
     """
     Ustawia język dokumentu Word.
-    
     Args:
         doc: Obiekt Document z python-docx
         language_code: Kod języka (np. 'pl-PL', 'en-US', 'de-DE')
     """
-    # Mapowanie kodów języków na kody Word
     lang_map = {
         'pl': 'pl-PL',
-        'en': 'en-US', 
+        'en': 'en-US',
         'de': 'de-DE',
         'fr': 'fr-FR',
         'es': 'es-ES',
@@ -39,28 +38,21 @@ def set_document_language(doc, language_code):
         'cs': 'cs-CZ',
         'sk': 'sk-SK'
     }
-    
-    # Jeśli przekazano krótki kod języka, rozszerz go
+
     if language_code in lang_map:
         language_code = lang_map[language_code]
-    
+
     try:
-        # Ustaw język dla całego dokumentu
         doc_element = doc._element
         doc_element.set(qn('xml:lang'), language_code)
-        
-        # Ustaw domyślny język dla stylów
         styles = doc.styles
         default_style = styles['Normal']
         default_style.font.name = 'Calibri'
-        
-        # Dodaj właściwość języka do domyślnego stylu
         rPr = default_style._element.get_or_add_rPr()
         lang_element = rPr.find(qn('w:lang'))
         if lang_element is None:
             lang_element = rPr.makeelement(qn('w:lang'))
             rPr.append(lang_element)
-        
         lang_element.set(qn('w:val'), language_code)
         lang_element.set(qn('w:eastAsia'), language_code)
         lang_element.set(qn('w:bidi'), language_code)
@@ -72,7 +64,6 @@ def zapisz_z_sledzeniem_zmian(paragraph, original_text, corrected_text, language
     """
     Porównuje dwa teksty i zapisuje je do akapitu, symulując śledzenie zmian.
     Tekst usunięty jest przekreślony, a dodany podkreślony.
-    
     Args:
         paragraph: Akapit do którego dodawany jest tekst
         original_text: Oryginalny tekst
@@ -80,9 +71,7 @@ def zapisz_z_sledzeniem_zmian(paragraph, original_text, corrected_text, language
         language_code: Kod języka dla run-ów tekstu
     """
     matcher = difflib.SequenceMatcher(None, original_text, corrected_text)
-    
     def set_run_language(run, lang_code):
-        """Pomocnicza funkcja do ustawiania języka dla run-a"""
         if lang_code:
             try:
                 rPr = run._element.get_or_add_rPr()
@@ -92,8 +81,7 @@ def zapisz_z_sledzeniem_zmian(paragraph, original_text, corrected_text, language
                     rPr.append(lang_element)
                 lang_element.set(qn('w:val'), lang_code)
             except Exception:
-                pass  # Ignoruj błędy ustawiania języka
-    
+                pass
     for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
         if opcode == 'equal':
             run = paragraph.add_run(original_text[i1:i2])
@@ -113,11 +101,18 @@ def zapisz_z_sledzeniem_zmian(paragraph, original_text, corrected_text, language
             run_del.font.strike = True
             run_del.font.color.rgb = RGBColor(255, 0, 0)
             set_run_language(run_del, language_code)
-            
             run_ins = paragraph.add_run(corrected_text[j1:j2])
             run_ins.font.underline = WD_UNDERLINE.SINGLE
             run_ins.font.color.rgb = RGBColor(0, 128, 0)
             set_run_language(run_ins, language_code)
+
+def format_timestamp(seconds):
+    td = timedelta(seconds=float(seconds))
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 def transkrybuj_i_rozpoznaj_mowcow(
     sciezka_pliku_wideo: str,
@@ -131,9 +126,9 @@ def transkrybuj_i_rozpoznaj_mowcow(
 ):
     """
     Wyodrębnia dźwięk, transkrybuje, dzieli na mówców, przeprowadza korektę
-    i zapisuje wynik do .docx z wizualnym śledzeniem zmian.
+    i zapisuje wynik do .docx z wizualnym śledzeniem zmian i znacznikami czasu.
     """
-    # --- Konfiguracja logowania ---
+
     logging.getLogger('pytorch_lightning').setLevel(logging.ERROR)
     logging.getLogger('pyannote').setLevel(logging.ERROR)
     logging.getLogger('torch').setLevel(logging.ERROR)
@@ -141,10 +136,10 @@ def transkrybuj_i_rozpoznaj_mowcow(
 
     print(f"--- Rozpoczynanie transkrypcji pliku: {sciezka_pliku_wideo} ---")
 
-    # --- Krok 1: Konfiguracja folderu roboczego ---
     nazwa_pliku_bazowa = os.path.splitext(os.path.basename(sciezka_pliku_wideo))[0]
     folder_roboczy = f"{nazwa_pliku_bazowa}_work"
     os.makedirs(folder_roboczy, exist_ok=True)
+
     print(f"Używam folderu roboczego: {folder_roboczy}")
 
     sciezka_pliku_audio = os.path.join(folder_roboczy, "audio.flac")
@@ -153,7 +148,7 @@ def transkrybuj_i_rozpoznaj_mowcow(
     sciezka_diarization = os.path.join(folder_roboczy, "diarization.pkl")
     sciezka_wyniku_finalnego = os.path.join(folder_roboczy, "wynik_finalny.json")
 
-    # --- Krok 2: Wyodrębnienie audio ---
+    # Krok 2: Wyodrębnienie audio
     if not os.path.exists(sciezka_pliku_audio):
         print("Krok 1/8: Wyodrębnianie ścieżki audio...")
         if not os.path.exists(sciezka_pliku_wideo):
@@ -172,13 +167,12 @@ def transkrybuj_i_rozpoznaj_mowcow(
     else:
         print("Krok 1/8: Pomijanie ekstrakcji audio (plik już istnieje).")
 
-    # --- Krok 3: Konfiguracja urządzenia ---
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Krok 2/8: Używane urządzenie: {device}")
     if device == "cpu":
         print("OSTRZEŻENIE: Brak GPU. Przetwarzanie na CPU będzie znacznie wolniejsze.")
-    
-    # --- Krok 4: Transkrypcja ---
+
+    # Krok 4: Transkrypcja
     if not os.path.exists(sciezka_transkrypcji):
         print(f"Krok 3/8: Ładowanie modelu WhisperX ('{model_whisper}')...")
         model = None
@@ -197,23 +191,33 @@ def transkrybuj_i_rozpoznaj_mowcow(
             if model is not None: del model
     else:
         print("Kroki 3/8 i 4/8: Pomijanie transkrypcji (pliki już istnieją).")
-        with open(sciezka_transkrypcji, 'r', encoding='utf-8') as f:
-            wynik_transkrypcji = json.load(f)
 
-    # --- Krok 5: Podział na mówców ---
+    with open(sciezka_transkrypcji, 'r', encoding='utf-8') as f:
+        wynik_transkrypcji = json.load(f)
+
+    # Krok 5: Podział na mówców
     if not os.path.exists(sciezka_wyniku_finalnego):
         model_a, diarize_model = None, None
         try:
             if not os.path.exists(sciezka_aligned):
                 print("Krok 5/8: Wyrównywanie transkrypcji...")
                 model_a, metadata = whisperx.load_align_model(language_code=wynik_transkrypcji["language"], device=device)
-                wynik_aligned = whisperx.align(wynik_transkrypcji["segments"], model_a, metadata, whisperx.load_audio(sciezka_pliku_audio), device, return_char_alignments=False)
-                with open(sciezka_aligned, 'w', encoding='utf-8') as f: json.dump(wynik_aligned, f, ensure_ascii=False, indent=4)
+                wynik_aligned = whisperx.align(
+                    wynik_transkrypcji["segments"],
+                    model_a, metadata,
+                    whisperx.load_audio(sciezka_pliku_audio),
+                    device,
+                    return_char_alignments=False
+                )
+                with open(sciezka_aligned, 'w', encoding='utf-8') as f:
+                    json.dump(wynik_aligned, f, ensure_ascii=False, indent=4)
                 print(f"Wyrównywanie zakończone i zapisane w: {sciezka_aligned}")
                 del model_a
             else:
                 print("Krok 5/8: Pomijanie wyrównywania (plik już istnieje).")
-                with open(sciezka_aligned, 'r', encoding='utf-8') as f: wynik_aligned = json.load(f)
+
+            with open(sciezka_aligned, 'r', encoding='utf-8') as f:
+                wynik_aligned = json.load(f)
 
             if not os.path.exists(sciezka_diarization):
                 print("Krok 6/8: Rozpoznawanie mówców (diarization)...")
@@ -222,80 +226,81 @@ def transkrybuj_i_rozpoznaj_mowcow(
                     print("\nBŁĄD KRYTYCZNY: Brak tokena HUGGING_FACE_TOKEN.")
                     sys.exit(1)
                 diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
-                diarize_segments = diarize_model(sciezka_pliku_audio, min_speakers=liczba_mowcow, max_speakers=liczba_mowcow)
-                with open(sciezka_diarization, 'wb') as f: pickle.dump(diarize_segments, f)
+                diarize_segments = diarize_model(
+                    sciezka_pliku_audio,
+                    min_speakers=liczba_mowcow,
+                    max_speakers=liczba_mowcow
+                )
+                with open(sciezka_diarization, 'wb') as f:
+                    pickle.dump(diarize_segments, f)
                 print(f"Diarization zakończony i zapisany w: {sciezka_diarization}")
                 del diarize_model
             else:
                 print("Krok 6/8: Pomijanie diarization (plik już istnieje).")
-                with open(sciezka_diarization, 'rb') as f: diarize_segments = pickle.load(f)
+
+            with open(sciezka_diarization, 'rb') as f:
+                diarize_segments = pickle.load(f)
 
             wynik_finalny = whisperx.assign_word_speakers(diarize_segments, wynik_aligned)
-            with open(sciezka_wyniku_finalnego, 'w', encoding='utf-8') as f: json.dump(wynik_finalny, f, ensure_ascii=False, indent=4)
+            with open(sciezka_wyniku_finalnego, 'w', encoding='utf-8') as f:
+                json.dump(wynik_finalny, f, ensure_ascii=False, indent=4)
             print(f"Przypisano mówców i zapisano wynik w: {sciezka_wyniku_finalnego}")
         except Exception as e:
             print(f"\nBŁĄD podczas rozpoznawania mówców: {e}")
             sys.exit(1)
     else:
         print("Kroki 5/8 i 6/8: Pomijanie (finalny plik z mówcami już istnieje).")
-        with open(sciezka_wyniku_finalnego, 'r', encoding='utf-8') as f:
-            wynik_finalny = json.load(f)
+    with open(sciezka_wyniku_finalnego, 'r', encoding='utf-8') as f:
+        wynik_finalny = json.load(f)
 
-    # --- Krok 7: Zaawansowana korekta tekstu ---
+    # Krok 7: Korekta tekstu
     print("Krok 7/8: Inicjowanie zaawansowanej korekty gramatycznej (LanguageTool)...")
     tool = None
     try:
         lang_map_lt = {'pl': 'pl-PL', 'en': 'en-US', 'de': 'de-DE'}
         lt_lang_code = lang_map_lt.get(jezyk, jezyk)
         tool = language_tool_python.LanguageTool(lt_lang_code)
-
     except Exception as e:
         print(f"BŁĄD: Nie udało się zainicjować LanguageTool. Upewnij się, że masz zainstalowaną Javę. Błąd: {e}")
 
-    # --- Krok 8: Zapis do pliku Word ---
+    # Krok 8: Zapis do pliku Word
     print(f"Krok 8/8: Zapisywanie wyniku do pliku {sciezka_pliku_docx}...")
     try:
         doc = Document()
-        
-        # Ustaw język dokumentu
         set_document_language(doc, jezyk)
         print(f"Ustawiono język dokumentu na: {jezyk}")
-        
+
         doc.add_heading(f'Transkrypcja pliku: {os.path.basename(sciezka_pliku_wideo)}', 0)
-        
-        # Mapowanie kodów języków dla run-ów
+
         lang_map_docx = {
-            'pl': 'pl-PL',
-            'en': 'en-US', 
-            'de': 'de-DE',
-            'fr': 'fr-FR',
-            'es': 'es-ES',
-            'it': 'it-IT',
-            'ru': 'ru-RU',
-            'cs': 'cs-CZ',
-            'sk': 'sk-SK'
+            'pl': 'pl-PL', 'en': 'en-US', 'de': 'de-DE', 'fr': 'fr-FR', 'es': 'es-ES',
+            'it': 'it-IT', 'ru': 'ru-RU', 'cs': 'cs-CZ', 'sk': 'sk-SK'
         }
         docx_lang_code = lang_map_docx.get(jezyk, jezyk)
-        
+
         aktualny_mowca = None
         aktualna_kwestia = []
+        aktualny_start = None
 
         for segment in wynik_finalny["segments"]:
-            if "speaker" not in segment: segment['speaker'] = "MÓWCA_NIEZNANY"
+            if "speaker" not in segment:
+                segment['speaker'] = "MÓWCA_NIEZNANY"
             segment_speaker = segment["speaker"].replace("SPEAKER_", "Mówca ")
 
+            # Check for speaker change
             if aktualny_mowca != segment_speaker and aktualny_mowca is not None:
                 tekst_do_korekty = ''.join(aktualna_kwestia).lstrip()
-                
                 if tool:
                     poprawiony_tekst = tool.correct(tekst_do_korekty)
                 else:
                     poprawiony_tekst = tekst_do_korekty
-                
+
+                # Insert timestamp from the first segment's start in this "kwestia"
+                timestamp_str = f"[{format_timestamp(aktualny_start)}] " if aktualny_start is not None else ""
+
                 p = doc.add_paragraph()
-                speaker_run = p.add_run(f"{aktualny_mowca}: ")
+                speaker_run = p.add_run(f"{timestamp_str}{aktualny_mowca}: ")
                 speaker_run.bold = True
-                # Ustaw język dla nazwy mówcy
                 try:
                     rPr = speaker_run._element.get_or_add_rPr()
                     lang_element = rPr.find(qn('w:lang'))
@@ -304,30 +309,33 @@ def transkrybuj_i_rozpoznaj_mowcow(
                         rPr.append(lang_element)
                     lang_element.set(qn('w:val'), docx_lang_code)
                 except Exception:
-                    pass  # Ignoruj błędy ustawiania języka
-                
+                    pass
                 zapisz_z_sledzeniem_zmian(p, tekst_do_korekty, poprawiony_tekst, docx_lang_code)
+
                 aktualna_kwestia = []
-            
+                aktualny_start = None
+
+            # Fill current kwestia and record start
             aktualny_mowca = segment_speaker
-            
+            if aktualny_start is None and "start" in segment:
+                aktualny_start = segment["start"]
             if 'words' in segment:
                 for word_info in segment['words']:
                     aktualna_kwestia.append(word_info['word'] + " ")
             else:
                 aktualna_kwestia.append(segment.get('text', '').strip() + " ")
 
+        # Write last kwestia (if any)
         if aktualny_mowca is not None and aktualna_kwestia:
             tekst_do_korekty = ''.join(aktualna_kwestia).lstrip()
             if tool:
                 poprawiony_tekst = tool.correct(tekst_do_korekty)
             else:
                 poprawiony_tekst = tekst_do_korekty
-            
+            timestamp_str = f"[{format_timestamp(aktualny_start)}] " if aktualny_start is not None else ""
             p = doc.add_paragraph()
-            speaker_run = p.add_run(f"{aktualny_mowca}: ")
+            speaker_run = p.add_run(f"{timestamp_str}{aktualny_mowca}: ")
             speaker_run.bold = True
-            # Ustaw język dla nazwy mówcy
             try:
                 rPr = speaker_run._element.get_or_add_rPr()
                 lang_element = rPr.find(qn('w:lang'))
@@ -336,14 +344,12 @@ def transkrybuj_i_rozpoznaj_mowcow(
                     rPr.append(lang_element)
                 lang_element.set(qn('w:val'), docx_lang_code)
             except Exception:
-                pass  # Ignoruj błędy ustawiania języka
-            
+                pass
             zapisz_z_sledzeniem_zmian(p, tekst_do_korekty, poprawiony_tekst, docx_lang_code)
 
         doc.save(sciezka_pliku_docx)
         print("\n--- Zakończono pomyślnie! ---")
         print(f"Wynik został zapisany w pliku: {sciezka_pliku_docx}")
-
     except Exception as e:
         print(f"BŁĄD podczas zapisu do pliku .docx: {e}")
     finally:
@@ -353,7 +359,6 @@ def transkrybuj_i_rozpoznaj_mowcow(
 if __name__ == "__main__":
     load_dotenv()
     default_compute_type = "float16" if torch.cuda.is_available() else "int8"
-
     parser = argparse.ArgumentParser(
         description="Zaawansowana transkrypcja wideo z podziałem na mówców i zapisem do Word.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -361,30 +366,29 @@ if __name__ == "__main__":
     parser.add_argument("sciezka_wideo", type=str, help="Ścieżka do pliku wideo.")
     parser.add_argument("--liczba_mowcow", type=int, default=os.getenv("DEFAULT_SPEAKERS", None), help="Liczba mówców.")
     parser.add_argument("--plik_wyjsciowy", type=str, default=None, help="Nazwa pliku .docx.")
-    parser.add_argument("--model", type=str, default=os.getenv("DEFAULT_MODEL", "large-v2"), choices=["tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3"], help="Model Whisper do użycia.")
+    parser.add_argument("--model", type=str, default=os.getenv("DEFAULT_MODEL", "large-v2"),
+                        choices=["tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3"],
+                        help="Model Whisper do użycia.")
     parser.add_argument("--jezyk", type=str, default=os.getenv("DEFAULT_LANGUAGE", "pl"), help="Kod języka (np. 'pl', 'en').")
     parser.add_argument("--batch_size", type=int, default=16, help="Liczba segmentów przetwarzanych równolegle.")
     parser.add_argument("--cpu_threads", type=int, default=os.cpu_count(), help="Liczba wątków CPU do użycia.")
-    parser.add_argument("--compute_type", type=str, default=default_compute_type, choices=["float16", "float32", "int8", "int8_float16"], help=f"Typ obliczeń. Domyślnie: '{default_compute_type}'.")
+    parser.add_argument("--compute_type", type=str, default=default_compute_type,
+                        choices=["float16", "float32", "int8", "int8_float16"],
+                        help=f"Typ obliczeń. Domyślnie: '{default_compute_type}'.")
     parser.add_argument("--beam_size", type=int, default=5, help="Liczba 'promieni' w beam search.")
-    
-    args = parser.parse_args()
 
+    args = parser.parse_args()
     if args.liczba_mowcow is None:
         print("BŁĄD: Liczba mówców jest wymagana.")
         sys.exit(1)
-        
     plik_wyjsciowy = args.plik_wyjsciowy
     if plik_wyjsciowy is None:
         nazwa_bazowa = os.path.splitext(os.path.basename(args.sciezka_wideo))[0]
         plik_wyjsciowy = f"{nazwa_bazowa}.docx"
-        
     if not torch.cuda.is_available():
         print(f"Ustawiam liczbę wątków CPU na: {args.cpu_threads}")
         torch.set_num_threads(args.cpu_threads)
-
     asr_options = {"beam_size": args.beam_size}
-
     transkrybuj_i_rozpoznaj_mowcow(
         args.sciezka_wideo,
         plik_wyjsciowy,
@@ -395,3 +399,4 @@ if __name__ == "__main__":
         args.compute_type,
         asr_options
     )
+
