@@ -11,6 +11,7 @@ from whisperx.diarize import DiarizationPipeline
 from docx import Document
 from docx.shared import RGBColor
 from docx.enum.text import WD_UNDERLINE
+from docx.oxml.ns import qn
 import json
 import pickle
 from dotenv import load_dotenv
@@ -18,32 +19,105 @@ import logging
 import language_tool_python
 import difflib
 
-def zapisz_z_sledzeniem_zmian(paragraph, original_text, corrected_text):
+def set_document_language(doc, language_code):
+    """
+    Ustawia język dokumentu Word.
+    
+    Args:
+        doc: Obiekt Document z python-docx
+        language_code: Kod języka (np. 'pl-PL', 'en-US', 'de-DE')
+    """
+    # Mapowanie kodów języków na kody Word
+    lang_map = {
+        'pl': 'pl-PL',
+        'en': 'en-US', 
+        'de': 'de-DE',
+        'fr': 'fr-FR',
+        'es': 'es-ES',
+        'it': 'it-IT',
+        'ru': 'ru-RU',
+        'cs': 'cs-CZ',
+        'sk': 'sk-SK'
+    }
+    
+    # Jeśli przekazano krótki kod języka, rozszerz go
+    if language_code in lang_map:
+        language_code = lang_map[language_code]
+    
+    try:
+        # Ustaw język dla całego dokumentu
+        doc_element = doc._element
+        doc_element.set(qn('xml:lang'), language_code)
+        
+        # Ustaw domyślny język dla stylów
+        styles = doc.styles
+        default_style = styles['Normal']
+        default_style.font.name = 'Calibri'
+        
+        # Dodaj właściwość języka do domyślnego stylu
+        rPr = default_style._element.get_or_add_rPr()
+        lang_element = rPr.find(qn('w:lang'))
+        if lang_element is None:
+            lang_element = rPr.makeelement(qn('w:lang'))
+            rPr.append(lang_element)
+        
+        lang_element.set(qn('w:val'), language_code)
+        lang_element.set(qn('w:eastAsia'), language_code)
+        lang_element.set(qn('w:bidi'), language_code)
+    except Exception as e:
+        print(f"Ostrzeżenie: Nie udało się ustawić języka dokumentu: {e}")
+        pass
+
+def zapisz_z_sledzeniem_zmian(paragraph, original_text, corrected_text, language_code=None):
     """
     Porównuje dwa teksty i zapisuje je do akapitu, symulując śledzenie zmian.
     Tekst usunięty jest przekreślony, a dodany podkreślony.
+    
+    Args:
+        paragraph: Akapit do którego dodawany jest tekst
+        original_text: Oryginalny tekst
+        corrected_text: Poprawiony tekst
+        language_code: Kod języka dla run-ów tekstu
     """
     matcher = difflib.SequenceMatcher(None, original_text, corrected_text)
     
+    def set_run_language(run, lang_code):
+        """Pomocnicza funkcja do ustawiania języka dla run-a"""
+        if lang_code:
+            try:
+                rPr = run._element.get_or_add_rPr()
+                lang_element = rPr.find(qn('w:lang'))
+                if lang_element is None:
+                    lang_element = rPr.makeelement(qn('w:lang'))
+                    rPr.append(lang_element)
+                lang_element.set(qn('w:val'), lang_code)
+            except Exception:
+                pass  # Ignoruj błędy ustawiania języka
+    
     for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
         if opcode == 'equal':
-            paragraph.add_run(original_text[i1:i2])
+            run = paragraph.add_run(original_text[i1:i2])
+            set_run_language(run, language_code)
         elif opcode == 'delete':
             run = paragraph.add_run(original_text[i1:i2])
             run.font.strike = True
             run.font.color.rgb = RGBColor(255, 0, 0)
+            set_run_language(run, language_code)
         elif opcode == 'insert':
             run = paragraph.add_run(corrected_text[j1:j2])
             run.font.underline = WD_UNDERLINE.SINGLE
             run.font.color.rgb = RGBColor(0, 128, 0)
+            set_run_language(run, language_code)
         elif opcode == 'replace':
             run_del = paragraph.add_run(original_text[i1:i2])
             run_del.font.strike = True
             run_del.font.color.rgb = RGBColor(255, 0, 0)
+            set_run_language(run_del, language_code)
             
             run_ins = paragraph.add_run(corrected_text[j1:j2])
             run_ins.font.underline = WD_UNDERLINE.SINGLE
             run_ins.font.color.rgb = RGBColor(0, 128, 0)
+            set_run_language(run_ins, language_code)
 
 def transkrybuj_i_rozpoznaj_mowcow(
     sciezka_pliku_wideo: str,
@@ -182,7 +256,26 @@ def transkrybuj_i_rozpoznaj_mowcow(
     print(f"Krok 8/8: Zapisywanie wyniku do pliku {sciezka_pliku_docx}...")
     try:
         doc = Document()
+        
+        # Ustaw język dokumentu
+        set_document_language(doc, jezyk)
+        print(f"Ustawiono język dokumentu na: {jezyk}")
+        
         doc.add_heading(f'Transkrypcja pliku: {os.path.basename(sciezka_pliku_wideo)}', 0)
+        
+        # Mapowanie kodów języków dla run-ów
+        lang_map_docx = {
+            'pl': 'pl-PL',
+            'en': 'en-US', 
+            'de': 'de-DE',
+            'fr': 'fr-FR',
+            'es': 'es-ES',
+            'it': 'it-IT',
+            'ru': 'ru-RU',
+            'cs': 'cs-CZ',
+            'sk': 'sk-SK'
+        }
+        docx_lang_code = lang_map_docx.get(jezyk, jezyk)
         
         aktualny_mowca = None
         aktualna_kwestia = []
@@ -200,8 +293,20 @@ def transkrybuj_i_rozpoznaj_mowcow(
                     poprawiony_tekst = tekst_do_korekty
                 
                 p = doc.add_paragraph()
-                p.add_run(f"{aktualny_mowca}: ").bold = True
-                zapisz_z_sledzeniem_zmian(p, tekst_do_korekty, poprawiony_tekst)
+                speaker_run = p.add_run(f"{aktualny_mowca}: ")
+                speaker_run.bold = True
+                # Ustaw język dla nazwy mówcy
+                try:
+                    rPr = speaker_run._element.get_or_add_rPr()
+                    lang_element = rPr.find(qn('w:lang'))
+                    if lang_element is None:
+                        lang_element = rPr.makeelement(qn('w:lang'))
+                        rPr.append(lang_element)
+                    lang_element.set(qn('w:val'), docx_lang_code)
+                except Exception:
+                    pass  # Ignoruj błędy ustawiania języka
+                
+                zapisz_z_sledzeniem_zmian(p, tekst_do_korekty, poprawiony_tekst, docx_lang_code)
                 aktualna_kwestia = []
             
             aktualny_mowca = segment_speaker
@@ -220,8 +325,20 @@ def transkrybuj_i_rozpoznaj_mowcow(
                 poprawiony_tekst = tekst_do_korekty
             
             p = doc.add_paragraph()
-            p.add_run(f"{aktualny_mowca}: ").bold = True
-            zapisz_z_sledzeniem_zmian(p, tekst_do_korekty, poprawiony_tekst)
+            speaker_run = p.add_run(f"{aktualny_mowca}: ")
+            speaker_run.bold = True
+            # Ustaw język dla nazwy mówcy
+            try:
+                rPr = speaker_run._element.get_or_add_rPr()
+                lang_element = rPr.find(qn('w:lang'))
+                if lang_element is None:
+                    lang_element = rPr.makeelement(qn('w:lang'))
+                    rPr.append(lang_element)
+                lang_element.set(qn('w:val'), docx_lang_code)
+            except Exception:
+                pass  # Ignoruj błędy ustawiania języka
+            
+            zapisz_z_sledzeniem_zmian(p, tekst_do_korekty, poprawiony_tekst, docx_lang_code)
 
         doc.save(sciezka_pliku_docx)
         print("\n--- Zakończono pomyślnie! ---")
@@ -278,4 +395,3 @@ if __name__ == "__main__":
         args.compute_type,
         asr_options
     )
-
