@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 import logging
 import language_tool_python
 import difflib
-from datetime import timedelta  # Needed for timestamp formatting
+from datetime import timedelta
 
 def set_document_language(doc, language_code):
     """
