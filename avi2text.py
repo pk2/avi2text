@@ -76,14 +76,14 @@ def generate_html_output(transcription_data, audio_clips_relative_paths, origina
         label {{ display: block; font-weight: 500; color: #374151; }}
         input[type="range"] {{ width: 100%; height: 0.5rem; background-color: #e5e7eb; border-radius: 9999px; -webkit-appearance: none; appearance: none; cursor: pointer; }}
         input[type="checkbox"] {{ height: 1rem; width: 1rem; border-radius: 0.25rem; border-color: #6b7280; color: #4f46e5; }}
-        input[type="text"] {{ flex-grow: 1; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 0.375rem; }}
         #transcription-container {{ space-y: 1rem; }}
         .segment-wrapper {{ display: flex; align-items: flex-start; gap: 1rem; padding: 0.75rem; border-bottom: 1px solid #e5e7eb; border-radius: 0.5rem; transition: background-color 0.3s, border-color 0.3s; border-left: 4px solid transparent; }}
         .segment-wrapper:last-child {{ border-bottom: none; }}
         .play-pause-btn {{ flex-shrink: 0; width: 2.75rem; height: 2.75rem; border-radius: 9999px; display: flex; align-items: center; justify-content: center; padding: 0; }}
         .play-pause-btn svg {{ height: 2rem; width: 2rem; }}
         .textarea-wrapper {{ position: relative; width: 100%; }}
-        textarea, .highlight-div {{ overflow-y: hidden; resize: none; width: 100%; margin-top: 0.25rem; padding: 0.5rem; padding-bottom: 2rem; border: 1px solid #d1d5db; border-radius: 0.375rem; transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1); font: inherit; letter-spacing: inherit; }}
+        /* MODYFIKACJA: Zmniejszono dolny padding */
+        textarea, .highlight-div {{ overflow-y: hidden; resize: none; width: 100%; margin-top: 0.25rem; padding: 0.5rem; padding-bottom: 1rem; border: 1px solid #d1d5db; border-radius: 0.375rem; transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1); font: inherit; letter-spacing: inherit; }}
         .highlight-div {{ position: absolute; top: 0; left: 0; z-index: 1; color: transparent; white-space: pre-wrap; word-wrap: break-word; pointer-events: none; }}
         textarea {{ position: relative; z-index: 2; background: transparent; color: inherit; caret-color: black; }}
         .tooltip {{ position: relative; display: inline-block; }}
@@ -93,6 +93,22 @@ def generate_html_output(transcription_data, audio_clips_relative_paths, origina
         .playing {{ background-color: #eff6ff !important; border-left-color: #3b82f6 !important; }}
         .edited-word {{ background-color: #fef9c3; border-radius: 3px; }}
         .edited-frame {{ border: 1px solid #facc15 !important; }}
+        .speaker-input {{
+            font-weight: 700;
+            color: #1f2937;
+            background-color: transparent;
+            border: none;
+            padding: 2px 4px;
+            margin: 0;
+            border-radius: 4px;
+            transition: background-color 0.2s, box-shadow 0.2s;
+            max-width: 250px;
+        }}
+        .speaker-input:focus {{
+            outline: none;
+            background-color: #eef2ff; /* indigo-100 */
+            box-shadow: 0 0 0 2px #6366f1; /* indigo-500 */
+        }}
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -103,9 +119,6 @@ def generate_html_output(transcription_data, audio_clips_relative_paths, origina
         </header>
         <main>
             <div id="editor-container">
-                <div class="bg-white p-6 rounded-lg shadow-md mb-6">
-                    <div id="speaker-inputs-container" class="grid grid-cols-1 gap-4"></div>
-                </div>
                 
                 <div id="controls-wrapper" class="sticky top-0 z-10 bg-gray-100/95 backdrop-blur-sm py-4 mb-6">
                     <div class="bg-white p-6 rounded-lg shadow-md">
@@ -145,7 +158,6 @@ def generate_html_output(transcription_data, audio_clips_relative_paths, origina
     <script>
         {injected_data_script}
 
-        const speakerInputsContainer = document.getElementById('speaker-inputs-container');
         const transcriptionContainer = document.getElementById('transcription-container');
         const copyTextButtonTop = document.getElementById('copy-text-button-top');
         const playbackSpeed = document.getElementById('playback-speed');
@@ -162,39 +174,8 @@ def generate_html_output(transcription_data, audio_clips_relative_paths, origina
 
         function autoResize(element) {{
             element.style.height = 'auto';
-            element.style.height = (element.scrollHeight + 16) + 'px';
-        }}
-
-        function populateSpeakerEditor(segments) {{
-            speakerInputsContainer.innerHTML = '';
-            const uniqueSpeakers = [...new Set(segments.map(s => s.speaker))].sort((a, b) => {{
-                try {{
-                    const numA = parseInt(a.match(/(\\d+)/)[0]);
-                    const numB = parseInt(b.match(/(\\d+)/)[0]);
-                    return numA - numB;
-                }} catch (e) {{
-                    return a.localeCompare(b);
-                }}
-            }});
-            
-            uniqueSpeakers.forEach(speaker => {{
-                speakerMap[speaker] = speaker;
-                const input = document.createElement('input');
-                input.type = 'text';
-                input.className = 'w-full p-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-indigo-500';
-                input.value = speaker;
-                input.dataset.originalSpeaker = speaker;
-                
-                input.addEventListener('input', (e) => {{
-                    const originalSpeaker = e.target.dataset.originalSpeaker;
-                    const newName = e.target.value;
-                    speakerMap[originalSpeaker] = newName;
-                    document.querySelectorAll(`.speaker-tag[data-original-speaker="${{originalSpeaker}}"]`).forEach(span => {{
-                        span.textContent = newName;
-                    }});
-                }});
-                speakerInputsContainer.appendChild(input);
-            }});
+            // MODYFIKACJA: Usunięto dodatkowy odstęp, wysokość dopasowuje się do zawartości i paddingu
+            element.style.height = element.scrollHeight + 'px';
         }}
 
         function displayTranscription(segments) {{
@@ -217,16 +198,42 @@ def generate_html_output(transcription_data, audio_clips_relative_paths, origina
                 const contentDiv = document.createElement('div');
                 contentDiv.className = 'flex-grow';
                 const headerDiv = document.createElement('div');
-                headerDiv.className = 'flex items-center space-x-3 text-sm';
-                const speakerTag = document.createElement('span');
-                speakerTag.className = 'speaker-tag font-bold text-gray-900';
-                speakerTag.dataset.originalSpeaker = segment.speaker;
-                speakerTag.textContent = speakerMap[segment.speaker] || segment.speaker;
+                headerDiv.className = 'flex items-center space-x-3 text-sm mb-1';
+
+                const speakerInput = document.createElement('input');
+                speakerInput.type = 'text';
+                speakerInput.className = 'speaker-input';
+                const originalSpeakerId = segment.speaker;
+                speakerInput.value = speakerMap[originalSpeakerId] || originalSpeakerId;
+                speakerInput.dataset.originalSpeaker = originalSpeakerId;
+
+                const setInputWidth = (input) => {{
+                    const minWidth = 80;
+                    input.style.width = 'auto';
+                    const scrollWidth = input.scrollWidth;
+                    input.style.width = `${{Math.max(scrollWidth, minWidth) + 2}}px`;
+                }};
+                
+                speakerInput.addEventListener('input', (e) => {{
+                    const newName = e.target.value;
+                    speakerMap[originalSpeakerId] = newName;
+                    
+                    document.querySelectorAll(`.speaker-input[data-original-speaker="${{originalSpeakerId}}"]`).forEach(input => {{
+                        if (input !== e.target) {{
+                            input.value = newName;
+                        }}
+                        setInputWidth(input);
+                    }});
+                }});
+                
                 const timeTag = document.createElement('span');
                 timeTag.className = 'text-gray-500';
                 timeTag.textContent = `[${{new Date(segment.start * 1000).toISOString().substr(14, 5)}}]`;
-                headerDiv.appendChild(speakerTag);
+                
+                // --- MODYFIKACJA: Zamieniono kolejność elementów ---
                 headerDiv.appendChild(timeTag);
+                headerDiv.appendChild(speakerInput);
+                // --- KONIEC MODYFIKACJI ---
 
                 const textareaWrapper = document.createElement('div');
                 textareaWrapper.className = 'textarea-wrapper';
@@ -257,8 +264,10 @@ def generate_html_output(transcription_data, audio_clips_relative_paths, origina
                 segmentDiv.appendChild(playButton);
                 segmentDiv.appendChild(contentDiv);
                 transcriptionContainer.appendChild(segmentDiv);
+                
                 autoResize(textInput);
                 autoResize(highlightDiv);
+                setInputWidth(speakerInput);
             }});
             
             document.querySelectorAll('.play-pause-btn').forEach(button => {{
@@ -392,7 +401,11 @@ def generate_html_output(transcription_data, audio_clips_relative_paths, origina
 
         // Inicjalizacja
         document.addEventListener('DOMContentLoaded', () => {{
-            populateSpeakerEditor(transcriptionData);
+            const uniqueSpeakers = [...new Set(transcriptionData.map(s => s.speaker))];
+            uniqueSpeakers.forEach(speaker => {{
+                speakerMap[speaker] = speaker;
+            }});
+
             displayTranscription(transcriptionData);
             updateAllPlayIcons('paused');
 
