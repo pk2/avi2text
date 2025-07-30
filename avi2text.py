@@ -113,10 +113,6 @@ def generate_html_output(transcription_data, audio_clips_relative_paths, origina
 </head>
 <body class="bg-gray-100 text-gray-800">
     <div class="container mx-auto p-4 md:p-8 max-w-5xl">
-        <header class="text-center mb-8">
-            <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Interaktywna Transkrypcja</h1>
-            <p class="text-gray-600 mt-2">Plik źródłowy: <strong>{original_filename}</strong></p>
-        </header>
         <main>
             <div id="editor-container">
                 
