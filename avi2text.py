@@ -460,6 +460,9 @@ def transkrybuj_i_generuj_html(
 
     sciezka_pliku_audio = os.path.join(folder_roboczy, "audio.wav")
     sciezka_wyniku_finalnego = os.path.join(folder_roboczy, "wynik_finalny.json")
+    
+    # ZMIANA: Definicja ścieżki wyjściowej HTML wewnątrz folderu roboczego
+    output_html_path = os.path.join(folder_roboczy, f"{nazwa_pliku_bazowa}_transkrypcja.html")
 
     if not os.path.exists(sciezka_pliku_audio):
         print("Krok 1/5: Wyodrębnianie ścieżki audio...")
@@ -503,7 +506,7 @@ def transkrybuj_i_generuj_html(
 
     print("Krok 4/5: Cięcie audio na klipy...")
     glowny_klip_audio = mp.AudioFileClip(sciezka_pliku_audio)
-    audio_clips_paths = []
+    audio_clips_paths_abs = []
     clip_counter = 0
     
     # Agregacja segmentów per mówca
@@ -542,20 +545,22 @@ def transkrybuj_i_generuj_html(
         try:
             subclip = glowny_klip_audio.subclip(segment["start"], segment["end"])
             subclip.write_audiofile(clip_path_abs, codec='pcm_s16le', logger=None)
-            audio_clips_paths.append(clip_path_abs)
+            audio_clips_paths_abs.append(clip_path_abs)
             clip_counter += 1
         except Exception as e:
             print(f"Ostrzeżenie: Nie udało się wyciąć klipu dla segmentu {segment['start']}-{segment['end']}: {e}")
-            audio_clips_paths.append(None)
+            audio_clips_paths_abs.append(None)
     
-    # Przypisanie ścieżek do zagregowanych segmentów
+    # ZMIANA: Tworzenie ścieżek względnych dla pliku HTML
+    audio_clips_relative_paths = [os.path.join("audio_clips", os.path.basename(p)) if p else None for p in audio_clips_paths_abs]
+
+    # Przypisanie ścieżek do zagregowanych segmentów (opcjonalne, bo nieużywane dalej)
     for i, segment in enumerate(aggregated_segments):
-        segment["audio_path"] = audio_clips_paths[i] if i < len(audio_clips_paths) else None
         segment["speaker"] = segment["speaker"].replace("SPEAKER_", "Mówca ")
 
     print("Krok 5/5: Generowanie finalnego pliku HTML...")
-    output_html_path = f"{nazwa_pliku_bazowa}_transkrypcja.html"
-    generate_html_output(aggregated_segments, audio_clips_paths, os.path.basename(sciezka_pliku_wideo), output_html_path)
+    # ZMIANA: Użycie ścieżek względnych i nowej ścieżki wyjściowej HTML
+    generate_html_output(aggregated_segments, audio_clips_relative_paths, os.path.basename(sciezka_pliku_wideo), output_html_path)
 
     print("\n--- Zakończono pomyślnie! ---")
 
