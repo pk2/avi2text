@@ -7,7 +7,7 @@ asteroid-filterbanks==0.4.0
 async-timeout==5.0.1
 attrs==25.3.0
 av==15.0.0
-certifi==2025.7.14
+certifi==2025.8.3
 cffi==1.17.1
 charset-normalizer==3.4.2
 click==8.1.8
@@ -94,7 +94,7 @@ pytorch-metric-learning==2.8.1
 pytz==2025.2
 PyYAML==6.0.2
 regex==2024.11.6
-requests==2.32.4
+requests==2.32.5
 rich==14.1.0
 ruamel.yaml==0.18.14
 ruamel.yaml.clib==0.2.12
